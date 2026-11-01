@@ -344,11 +344,24 @@ async function refreshNews() {
   const items = newsData.items.slice(0, 20);
   run.replaceChildren(...items.map(item), ...items.map(item));
   ticker.hidden = false;
-  requestAnimationFrame(() => {
-    const half = run.scrollWidth / 2;
-    run.style.setProperty('--ticker-duration', `${Math.max(40, half / 130)}s`);   // (130 px/s: the same reading pace at 36 px text)
-  });
+  requestAnimationFrame(() => { tickerMotion.half = run.scrollWidth / 2; tickerMotion.start(); });
 }
+
+// The ticker moves a whole number of pixels per tick at a modest frame rate rather than as a CSS animation, which
+// redraws at the display's full 60 Hz: on a Raspberry Pi 4 every redraw of the 1080p screen costs GPU time.
+const TICKER_FPS = 30, TICKER_STEP = 4;   // 120 px/s
+const tickerMotion = {
+  x: 0, half: 0, timer: null,
+  start() {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.step(), 1000 / TICKER_FPS);
+  },
+  step() {
+    if (!this.half || document.hidden || state.view !== 'home' || document.body.classList.contains('busy')) return;
+    this.x = (this.x + TICKER_STEP) % this.half;
+    $('#ticker-run').style.transform = `translate3d(${-this.x}px, 0, 0)`;
+  },
+};
 
 function ago(ts) {
   if (!ts) return '';
