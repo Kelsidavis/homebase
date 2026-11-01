@@ -40,7 +40,7 @@ if [ ! -x "$APP/venv/bin/plex-mpv-shim" ]; then
 fi
 # YouTube: yt-dlp with its challenge solver scripts, and Deno, the JavaScript runtime it needs (Home Base keeps
 # yt-dlp up to date itself)
-"$APP/venv/bin/pip" install --no-cache-dir --quiet -U "yt-dlp[default]" deno
+"$APP/venv/bin/pip" install --no-cache-dir --quiet -U "yt-dlp[default]" deno segno   # (segno: the sign-in QR code)
 chown -R "$USER_NAME:$USER_NAME" "$APP"
 
 # Browser policy

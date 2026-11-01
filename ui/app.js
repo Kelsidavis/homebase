@@ -1614,7 +1614,7 @@ const yt = {
     bar.append(account);
     api('/api/yt/account').then((a) => {
       account.dataset.signedIn = a.signed_in ? '1' : '0';
-      account.textContent = a.signed_in ? 'Sign out' : 'Sign in with Google';
+      account.textContent = a.signed_in ? 'Sign out' : 'Sign in';
     }).catch(() => account.remove());
     if (onTab) setTimeout(() => { const t = body.querySelector(`[data-yt-tab="${onTab}"]`); if (t) t.focus(); }, 0);
     const content = h('div', { class: 'grid videos' }, h('div', { class: 'empty' }, 'Loading…'));
@@ -1670,13 +1670,46 @@ const yt = {
     } catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
   },
 
-  // Google's own sign-in page in this browser; Home Base comes back by itself once the account is signed in (or out)
+  // As YouTube's TV apps sign in: a code (and QR code) on the TV, approved on a phone; this waits for the approval
   async signIn(out) {
-    try {
-      const r = await api('/api/yt/signin', { out });
-      toast(out ? 'Signing out…' : 'Sign in with your Google account. Home Base comes back when you are done.');
-      setTimeout(() => { location.href = r.url; }, out ? 300 : 1800);
-    } catch (err) { toast(err.message); }
+    if (out) {
+      try { await api('/api/yt/signin', { out: true }); toast('Signed out of YouTube'); this.render(); }
+      catch (err) { toast(err.message); }
+      return;
+    }
+    let r;
+    try { r = await api('/api/yt/signin', {}); } catch (err) { toast(err.message); return; }
+    const qr = h('div', { class: 'yt-qr' });
+    if (r.qr) qr.innerHTML = r.qr;   // (an SVG made on this box from the sign-in address)
+    const status = h('p', { class: 'yt-signin-status' }, 'Waiting for you to approve…');
+    let polling = true;
+    openDialog({
+      title: 'Sign in to YouTube',
+      body: h('div', { class: 'yt-signin' }, qr, h('div', null,
+        h('p', null, 'Scan the code with your phone, or go to'),
+        h('p', { class: 'yt-signin-url' }, r.url),
+        h('p', null, 'and enter'),
+        h('p', { class: 'yt-signin-code' }, r.code),
+        status)),
+      actions: [{ label: 'Cancel', onClick: () => closeDialog() }],
+      onClose: () => { polling = false; },
+    });
+    while (polling) {
+      await new Promise((res) => setTimeout(res, 3000));
+      if (!polling) break;
+      const a = await api('/api/yt/account').catch(() => null);
+      if (!a) continue;
+      if (a.signed_in && a.pending === 'done') {
+        polling = false;
+        closeDialog();
+        toast('Signed in to YouTube');
+        this.tab = 'home';
+        this.render();
+      } else if (a.pending === 'denied' || a.pending === 'expired') {
+        polling = false;
+        status.textContent = a.pending === 'denied' ? 'Sign-in was declined.' : 'The code expired. Close and try again.';
+      }
+    }
   },
 
   fillVideos(content, videos) {
@@ -1834,12 +1867,6 @@ async function start() {
   refreshNetworkChip();
   refreshNews();
   refreshCast();
-  api('/api/yt/account').then((a) => {   // back from Google's sign-in page: straight to YouTube
-    if (!a.just) return;
-    yt.tab = 'home';
-    show('youtube');
-    toast(a.just === 'signed in' ? 'Signed in to YouTube' : 'Signed out of YouTube');
-  }).catch(() => {});
   api('/api/plex/status').then((p) => {
     if (p.server) {
       $('#tile-plex-sub').textContent = `Movies and shows on ${p.server}`;

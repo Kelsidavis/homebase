@@ -12,6 +12,7 @@ import ipaddress
 import json
 import os
 import pwd
+import re
 import socket
 import struct
 import subprocess
@@ -62,7 +63,7 @@ DEFAULTS = {
     # ({"ip", "token", "keep": {"more_picture/backlight_control": "Off", "backlight": 65}}); the token stays here
     'tv': {'ip': None, 'token': None, 'keep': {}},
     # YouTube: channels followed here (no Google account) and watch history with resume points
-    'youtube': {'subs': [], 'history': []},
+    'youtube': {'subs': [], 'history': [], 'refresh_token': None},
 }
 
 # ---------------------------------------------------------------- settings
@@ -1277,71 +1278,224 @@ def _yt_cached(key, ttl, fn):
     return value
 
 
-# ---- the viewer's own YouTube account: signed in through Home Base's browser (Google's own sign-in page), its
-# cookies read by yt-dlp. They stay in the browser profile on this box.
-CHROMIUM_PROFILE = os.path.expanduser('~/.config/homebase-chromium')
-_yt_auth = {'checked': 0.0, 'signed_in': False, 'just': None}
+# ---- the viewer's own YouTube account, signed in as YouTube's TV apps are: a code shown on the TV (and a QR code)
+# approved on a phone at google.com/device. The sign-in (a refresh token) stays in settings.json (mode 600); the
+# account's recommendations, subscriptions and history come from YouTube's TV interface (Innertube, TVHTML5).
+YT_TV_CLIENT = ('861556708454-d6dlm3lh05idd8npek18k6be8ba3oc68.apps.googleusercontent.com', 'SboVhoG9s0rNafixCSGGKXAT')
+YT_TV_SCOPE = 'http://gdata.youtube.com https://www.googleapis.com/auth/youtube-paid-content'
+_yt_auth = {'access': None, 'expires': 0.0, 'pending': None, 'just': None}
+_yt_auth_lock = threading.Lock()
 
 
-def yt_signed_in(fresh=False):
-    if not fresh and time.time() - _yt_auth['checked'] < 30:
-        return _yt_auth['signed_in']
-    import shutil, sqlite3, tempfile
-    signed = False
-    db = os.path.join(CHROMIUM_PROFILE, 'Default', 'Cookies')
-    try:
-        with tempfile.TemporaryDirectory() as td:
-            for suffix in ('', '-journal', '-wal'):
-                if os.path.exists(db + suffix):
-                    shutil.copy(db + suffix, os.path.join(td, 'Cookies' + suffix))
-            con = sqlite3.connect(os.path.join(td, 'Cookies'))
-            try:
-                signed = con.execute("select count(*) from cookies where host_key like '%youtube.com' "
-                                     "and name in ('SAPISID', 'LOGIN_INFO')").fetchone()[0] > 0
-            finally:
-                con.close()
-    except (OSError, sqlite3.Error):
-        signed = False
-    if signed != _yt_auth['signed_in']:
-        with _yt_cache_lock:
-            _yt_cache.clear()   # (what was fetched signed out - or in - no longer applies)
-    _yt_auth.update(checked=time.time(), signed_in=signed)
-    return signed
+def yt_signed_in():
+    return bool(load_settings()['youtube'].get('refresh_token'))
 
 
-def _yt_cookie_args():
-    return ['--cookies-from-browser', f'chromium:{CHROMIUM_PROFILE}'] if yt_signed_in() else []
+def _yt_access_token():
+    with _yt_auth_lock:
+        if _yt_auth['access'] and time.time() < _yt_auth['expires'] - 60:
+            return _yt_auth['access']
+        refresh = load_settings()['youtube'].get('refresh_token')
+        if not refresh:
+            raise ApiError('Not signed in to YouTube', 401)
+        body = urllib.parse.urlencode({'client_id': YT_TV_CLIENT[0], 'client_secret': YT_TV_CLIENT[1],
+                                       'refresh_token': refresh, 'grant_type': 'refresh_token'}).encode()
+        try:
+            r = json.loads(http_get('https://oauth2.googleapis.com/token', data=body, timeout=15))
+        except urllib.error.HTTPError as e:
+            if e.code in (400, 401):   # revoked (signed out from the Google account's settings)
+                update_settings(lambda st: st['youtube'].update(refresh_token=None))
+                raise ApiError('YouTube sign-in has expired: sign in again', 401)
+            raise ApiError(f'YouTube sign-in failed ({e.code})', 502)
+        _yt_auth.update(access=r['access_token'], expires=time.time() + float(r.get('expires_in', 3600)))
+        return _yt_auth['access']
 
 
-def yt_account(q):
-    just, _yt_auth['just'] = _yt_auth['just'], None
-    return {'signed_in': yt_signed_in(), 'just': just}
-
-
-def _yt_await_account(want):
-    """While Google's sign-in (or sign-out) page is open: once the account's cookies have (dis)appeared, bring the
-    browser back to Home Base, which opens YouTube."""
-    deadline = time.time() + 15 * 60
-    while time.time() < deadline:
-        time.sleep(3)
-        if yt_signed_in(fresh=True) == want:
-            _yt_auth['just'] = 'signed in' if want else 'signed out'
-            time.sleep(2)
-            run(['pkill', '-x', 'chromium'])   # (the session starts it again on Home Base)
-            return
+def _yt_qr_svg(text):
+    code, out, err = run([os.path.join(VENV_BIN, 'python'), '-I', '-c',
+                          'import segno, sys; segno.make(sys.argv[1], error="m").save(sys.stdout.buffer, kind="svg", '
+                          'scale=10, border=2, dark="#000", light="#fff", xmldecl=False)', text], timeout=15)
+    return out if code == 0 else None
 
 
 def yt_signin(body):
-    want = not body.get('out')
-    threading.Thread(target=_yt_await_account, args=(want,), daemon=True).start()
-    after = urllib.parse.quote('https://www.youtube.com/', safe='')
-    if want:
-        return {'url': f'https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue={after}'}
-    return {'url': f'https://www.youtube.com/logout'}
+    """Start a sign-in: a code for google.com/device, then wait (in the background) for its approval."""
+    if body.get('out'):
+        refresh = load_settings()['youtube'].get('refresh_token')
+        update_settings(lambda st: st['youtube'].update(refresh_token=None))
+        with _yt_auth_lock:
+            _yt_auth.update(access=None, expires=0.0)
+        with _yt_cache_lock:
+            _yt_cache.clear()
+        if refresh:   # (and Google forgets this sign-in too)
+            _safe(lambda: http_get('https://oauth2.googleapis.com/revoke', data=urllib.parse.urlencode(
+                {'token': refresh}).encode(), timeout=10), None)
+        return {'signed_in': False}
+    r = json.loads(http_get('https://oauth2.googleapis.com/device/code', timeout=15, data=urllib.parse.urlencode(
+        {'client_id': YT_TV_CLIENT[0], 'scope': YT_TV_SCOPE}).encode()))
+    url = r.get('verification_url') or 'https://www.google.com/device'
+    pending = {'device': r['device_code'], 'interval': max(int(r.get('interval', 5)), 5),
+               'until': time.time() + float(r.get('expires_in', 1800)), 'state': 'waiting'}
+    _yt_auth['pending'] = pending
+    threading.Thread(target=_yt_await_approval, args=(pending,), daemon=True).start()
+    return {'code': r['user_code'], 'url': url.replace('https://', ''),
+            'qr': _yt_qr_svg(f"{url}?user_code={urllib.parse.quote(r['user_code'])}")}
+
+
+def _yt_await_approval(pending):
+    body = {'client_id': YT_TV_CLIENT[0], 'client_secret': YT_TV_CLIENT[1], 'device_code': pending['device'],
+            'grant_type': 'urn:ietf:params:oauth:grant-type:device_code'}
+    while time.time() < pending['until'] and _yt_auth['pending'] is pending:
+        time.sleep(pending['interval'])
+        try:
+            r = json.loads(http_get('https://oauth2.googleapis.com/token', timeout=15,
+                                    data=urllib.parse.urlencode(body).encode()))
+        except urllib.error.HTTPError as e:
+            try:
+                err = json.loads(e.read()).get('error')
+            except ValueError:
+                err = None
+            if err == 'authorization_pending':
+                continue
+            if err == 'slow_down':
+                pending['interval'] += 5
+                continue
+            pending['state'] = 'denied' if err == 'access_denied' else 'expired'
+            return
+        except (urllib.error.URLError, OSError, ValueError):
+            continue
+        update_settings(lambda st: st['youtube'].update(refresh_token=r.get('refresh_token')))
+        with _yt_auth_lock:
+            _yt_auth.update(access=r['access_token'], expires=time.time() + float(r.get('expires_in', 3600)))
+        with _yt_cache_lock:
+            _yt_cache.clear()
+        pending['state'] = 'done'
+        return
+    if pending['state'] == 'waiting':
+        pending['state'] = 'expired'
+
+
+def yt_account(q):
+    p = _yt_auth['pending']
+    return {'signed_in': yt_signed_in(), 'pending': p['state'] if p else None}
+
+
+def _yt_tv_browse(browse_id):
+    """A page of the account's YouTube TV interface (TVHTML5 Innertube), as JSON."""
+    ctx = {'client': {'clientName': 'TVHTML5', 'clientVersion': '7.20250101.00.00', 'hl': 'en',
+                      'gl': (load_settings()['country'] or 'US').upper()}}
+    raw = http_get('https://www.youtube.com/youtubei/v1/browse', timeout=20,
+                   data=json.dumps({'context': ctx, 'browseId': browse_id}).encode(),
+                   headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {_yt_access_token()}',
+                            'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version'})
+    return json.loads(raw)
+
+
+def _yt_text(o):
+    if isinstance(o, dict):
+        if 'simpleText' in o:
+            return str(o['simpleText'])
+        if 'runs' in o:
+            return ''.join(str(r.get('text', '')) for r in o['runs'] if isinstance(r, dict))
+        if 'content' in o and isinstance(o['content'], str):
+            return o['content']
+    return ''
+
+
+def _yt_tv_videos(page):
+    """The videos on a TV page: each the largest part of the page that leads to exactly one video (a tile)."""
+    sets = {}
+
+    def vids(o):
+        found = set()
+        if isinstance(o, dict):
+            we = o.get('watchEndpoint')
+            if isinstance(we, dict) and we.get('videoId'):
+                found.add(we['videoId'])
+            for v in o.values():
+                found |= vids(v)
+        elif isinstance(o, list):
+            for v in o:
+                found |= vids(v)
+        sets[id(o)] = found
+        return found
+    vids(page)
+    out, seen = [], set()
+
+    def emit(o):
+        vid = next(iter(sets[id(o)]))
+        if vid in seen:
+            return
+        seen.add(vid)
+        texts, channel_id, channel, dur, live = [], '', '', None, False
+
+        def scan(x, key=''):
+            nonlocal channel_id, channel, dur, live
+            if isinstance(x, dict):
+                t = _yt_text(x)
+                if t:
+                    texts.append((key, t))
+                    if re.fullmatch(r'\d{1,2}(:\d{2}){1,2}', t.strip()):
+                        parts = [int(n) for n in t.strip().split(':')]
+                        dur = sum(n * 60 ** i for i, n in enumerate(reversed(parts)))
+                    if t.strip().upper() == 'LIVE':
+                        live = True
+                    for r in x.get('runs') or []:
+                        be = ((r or {}).get('navigationEndpoint') or {}).get('browseEndpoint') or {}
+                        if str(be.get('browseId', '')).startswith('UC') and not channel_id:
+                            channel_id, channel = be['browseId'], str(r.get('text', ''))
+                be = x.get('browseEndpoint')
+                if isinstance(be, dict) and str(be.get('browseId', '')).startswith('UC') and not channel_id:
+                    channel_id = be['browseId']
+                for k, v in x.items():
+                    scan(v, k)
+            elif isinstance(x, list):
+                for v in x:
+                    scan(v, key)
+        scan(o)
+        title = next((t for k, t in texts if k == 'title' and t.strip()), '') or next((t for k, t in texts if len(t) > 12), '')
+        if not channel:   # (on TV tiles the channel is the first line under the title)
+            channel = next((t for k, t in texts if t != title and k not in ('title', 'accessibilityData', 'label')
+                            and not re.search(r'\d', t) and len(t) < 60), '')
+        out.append({'id': vid, 'title': title, 'channel': channel, 'channel_id': channel_id, 'duration': dur,
+                    'views': None, 'published': None, 'live': live, 'thumb': f'https://i.ytimg.com/vi/{vid}/hqdefault.jpg'})
+
+    def walk(o):
+        if isinstance(o, dict) and len(sets.get(id(o), ())) == 1:
+            emit(o)
+            return
+        for v in (o.values() if isinstance(o, dict) else o if isinstance(o, list) else ()):
+            walk(v)
+    walk(page)
+    return out
+
+
+def _yt_tv_feed(browse_id, ttl):
+    return _yt_cached(('account', browse_id), ttl, lambda: _yt_tv_videos(_yt_tv_browse(browse_id)))
+
+
+def _yt_mark_watched(vid):
+    """Into the account's watch history, as YouTube's own apps report a view (the player's playback ping)."""
+    import random
+    ctx = {'client': {'clientName': 'TVHTML5', 'clientVersion': '7.20250101.00.00', 'hl': 'en'}}
+    r = json.loads(http_get('https://www.youtube.com/youtubei/v1/player', timeout=20,
+                            data=json.dumps({'context': ctx, 'videoId': vid}).encode(),
+                            headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {_yt_access_token()}',
+                                     'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version'}))
+    url = ((r.get('playbackTracking') or {}).get('videostatsPlaybackUrl') or {}).get('baseUrl')
+    if not url:
+        return
+    alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+    cpn = ''.join(random.choice(alphabet) for _ in range(16))
+    parts = urllib.parse.urlparse(url)
+    q = urllib.parse.parse_qs(parts.query)
+    q.update({'ver': ['2'], 'cpn': [cpn]})
+    http_get(urllib.parse.urlunparse(parts._replace(query=urllib.parse.urlencode(q, doseq=True))), timeout=15,
+             headers={'Authorization': f'Bearer {_yt_access_token()}'})
 
 
 def _ytdlp_json(args, timeout=40):
-    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *_yt_cookie_args(), *args],
+    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args],
                          timeout=timeout, env=_yt_env())
     if code != 0:
         raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
@@ -1445,20 +1599,12 @@ def _yt_topic_videos(i):
     return _yt_cached(('topic', query, country), 3 * 3600, fetch)
 
 
-def _yt_account_feed(url, ttl, n=40):
-    def fetch():
-        d = _ytdlp_json(['--playlist-items', f'1-{n}', url], timeout=60)
-        return [_yt_video(e) for e in d.get('entries') or []
-                if e.get('id') and '/shorts/' not in str(e.get('url') or '') and e.get('ie_key') in (None, 'Youtube')]
-    return _yt_cached(('account', url), ttl, fetch)
-
-
 def yt_row(q):
     rid = (q.get('id') or [''])[0]
     if rid == 'rec':
-        return {'videos': _yt_account_feed(':ytrec', 900)}
+        return {'videos': _yt_tv_feed('FEwhat_to_watch', 900)}
     if rid == 'subs':
-        return {'videos': _yt_account_feed(':ytsubs', 600)}
+        return {'videos': _yt_tv_feed('FEsubscriptions', 600)}
     try:
         i = int(rid.removeprefix('topic'))
     except ValueError:
@@ -1506,7 +1652,7 @@ def _safe(fn, default):
 def yt_subs(q):
     if yt_signed_in():   # the account's channels, from its subscriptions feed (newest uploads first)
         seen, out = set(), []
-        for v in _safe(lambda: _yt_account_feed(':ytsubs', 600, n=150), []):
+        for v in _safe(lambda: _yt_tv_feed('FEsubscriptions', 600), []):
             if v['channel_id'] and v['channel_id'] not in seen:
                 seen.add(v['channel_id'])
                 out.append({'id': v['channel_id'], 'name': v['channel'], 'avatar': None})
@@ -1550,7 +1696,7 @@ def yt_history(q):
         return local
     where = {h['id']: h for h in local}   # (resume points are kept here; the account's history lists what was watched)
     out = []
-    for v in _safe(lambda: _yt_account_feed(':ythistory', 120, n=60), []):
+    for v in _safe(lambda: _yt_tv_feed('FEhistory', 120), []):
         h = where.get(v['id'])
         out.append(dict(v, position=h['position'], duration=h.get('duration') or v.get('duration')) if h else v)
     return out or local
@@ -1609,7 +1755,7 @@ def _yt_resolve(vid):
             break
         pending.wait(90)
     try:
-        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT, *_yt_cookie_args(),
+        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
                               f'https://www.youtube.com/watch?v={vid}'], timeout=90, env=_yt_env())
         if code != 0:
             raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
@@ -1686,9 +1832,7 @@ def yt_play(body):
         _player.update(proc=proc, title=title, rating_key=None, position=start * 1000, paused=False, duration=0)
     threading.Thread(target=_watch_yt, args=(proc, video), daemon=True).start()
     if yt_signed_in():   # (into the account's watch history, as YouTube's own apps do)
-        threading.Thread(target=run, args=(['nice', '-n', '10', _ytdlp(), '--mark-watched', '--simulate', '--no-warnings',
-                                            *_yt_cookie_args(), f'https://www.youtube.com/watch?v={vid}'],),
-                         kwargs={'timeout': 120, 'env': _yt_env()}, daemon=True).start()
+        threading.Thread(target=lambda: _safe(lambda: _yt_mark_watched(vid), None), daemon=True).start()
     return {'ok': True, 'title': title, 'start': start}
 
 
