@@ -371,7 +371,8 @@ function openMenu() {
   const r = btn.getBoundingClientRect();
   const stage = $('#view-home').getBoundingClientRect();
   const menu = $('#menu');
-  menu.style.top = `${r.bottom - stage.top + 16}px`;
+  menu.style.top = 'auto';   // (the button is at the bottom right: the menu opens upwards)
+  menu.style.bottom = `${stage.bottom - r.top + 16}px`;
   menu.style.right = `${stage.right - r.right}px`;
   menu.classList.add('open');
   btn.setAttribute('aria-expanded', 'true');

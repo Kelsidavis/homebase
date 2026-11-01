@@ -245,13 +245,13 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
 .tile.music { --tile-color: var(--tile-music); }
 .tile.cast { --tile-color: var(--tile-cast); }
 
+.home-foot { display: flex; align-items: center; gap: 24px; }
+.ticker[hidden] { display: none; }
+.home-foot .ticker { flex: 1 1 auto; min-width: 0; }
+.home-foot #menu-btn { margin-left: auto; flex-shrink: 0; }
 .ticker {
-  display: flex; align-items: center; gap: 28px; height: 88px; padding-left: 12px;
+  display: flex; align-items: center; gap: 28px; height: 88px; padding-left: 36px;
   border-radius: 999px; background: color-mix(in srgb, var(--surface) 88%, transparent); overflow: hidden;
-}
-.ticker .label {
-  flex-shrink: 0; display: flex; align-items: center; height: 64px; padding: 0 28px; border-radius: 999px;
-  background: var(--accent); color: var(--accent-ink); font-size: 28px; font-weight: 600; letter-spacing: 1px;
 }
 .ticker .track { flex-grow: 1; position: relative; height: 88px; overflow: hidden; }
 .ticker .run {
@@ -266,7 +266,7 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
   position: absolute; z-index: 20; width: 400px; padding: 12px; border-radius: 26px;
   background: var(--surface-2); box-shadow: 0 28px 72px rgba(0,0,0,0.55);
   display: flex; flex-direction: column; gap: 4px;
-  opacity: 0; transform: translateY(-12px) scale(0.97); transform-origin: top right;
+  opacity: 0; transform: translateY(12px) scale(0.97); transform-origin: bottom right;
   pointer-events: none; transition: opacity 180ms ease, transform 200ms ease;
 }
 .menu.open { opacity: 1; transform: none; pointer-events: auto; }
