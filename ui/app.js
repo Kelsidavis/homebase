@@ -1690,7 +1690,9 @@ const plexv = {
     const meta = [it.type === 'episode' ? `S${it.parentIndex}·E${it.index}` : null, it.year, mins ? `${Math.floor(mins / 60) ? `${Math.floor(mins / 60)} h ` : ''}${mins % 60} min` : null,
       it.contentRating, it.Media && it.Media[0] && it.Media[0].videoResolution ? `${String(it.Media[0].videoResolution).toUpperCase()}` : null].filter(Boolean).join(' · ');
     const play = async (resume) => {
-      try { await api('/api/plex/play', { key: it.ratingKey, resume }); toast(`Starting ${it.title}…`); this.watchPlayer(); } catch (err) { toast(err.message); }
+      starting.show(it.title, src, null);
+      try { await api('/api/plex/play', { key: it.ratingKey, resume }); starting.untilPlaying(); this.watchPlayer(); }
+      catch (err) { starting.hide(); toast(err.message); }
     };
     const actions = h('div', { class: 'detail-actions' },
       it.viewOffset ? h('button', { class: 'primary', id: 'plex-resume', onclick: () => play(true) }, `Resume from ${fmtTime(it.viewOffset / 1000)}`) : null,
@@ -1721,6 +1723,43 @@ function focusFirstPlex() {
   const el = $('#plex-body .card-item') || $('#plex-body .track') || $('#plex-body button');
   if (el) el.focus();
 }
+
+/* ==================================================================== loading */
+
+// Placeholder cards while a row or page loads: the shape of what is coming, gently pulsing (opacity only: cheap)
+function skeletonCards(n) {
+  return Array.from({ length: n }, () => h('div', { class: 'card-item skel-card', 'aria-hidden': 'true' },
+    h('div', { class: 'img skel' }), h('div', { class: 'skel skel-line' }), h('div', { class: 'skel skel-line short' })));
+}
+
+// "Starting" over the whole screen from Play until the video is on screen (the player opens over it)
+const starting = {
+  timer: null,
+  show(title, img, fallback) {
+    const el = $('#starting');
+    $('#starting-title').textContent = title || '';
+    const bg = $('#starting .bg');
+    bg.style.backgroundImage = img ? (fallback ? `url("${img}"), url("${fallback}")` : `url("${img}")`) : '';
+    el.hidden = false;
+    requestAnimationFrame(() => el.classList.add('on'));
+  },
+  hide() {
+    clearInterval(this.timer);
+    const el = $('#starting');
+    el.classList.remove('on');
+    setTimeout(() => { if (!el.classList.contains('on')) el.hidden = true; }, 300);
+  },
+  // the player reports a position once frames are out; give up after 40 s (the player shows its own errors)
+  untilPlaying() {
+    clearInterval(this.timer);
+    const t0 = Date.now();
+    this.timer = setInterval(async () => {
+      let p = null;
+      try { p = await api('/api/player'); } catch { /* try again */ }
+      if ((p && p.playing && p.position > 0) || (p && !p.playing && Date.now() - t0 > 4000) || Date.now() - t0 > 40000) this.hide();
+    }, 500);
+  },
+};
 
 /* ==================================================================== youtube */
 
@@ -1753,13 +1792,14 @@ const yt = {
       account.textContent = a.signed_in ? 'Sign out' : 'Sign in';
     }).catch(() => account.remove());
     if (onTab) setTimeout(() => { const t = body.querySelector(`[data-yt-tab="${onTab}"]`); if (t) t.focus(); }, 0);
-    const content = h('div', { class: 'grid videos' }, h('div', { class: 'empty' }, 'Loading…'));
+    const content = h('div', { class: 'grid videos' }, ...skeletonCards(8));
     if (this.tab === 'search') {
       const q = h('input', { class: 'text-input', placeholder: 'Search YouTube', value: this.query, 'data-enter': 'yt-go', style: { flexGrow: 1 } });
       const go = h('button', { class: 'primary', id: 'yt-go', onclick: async () => {
         this.query = q.value.trim();
         if (!this.query) return;
-        content.replaceChildren(h('div', { class: 'empty' }, 'Searching…'));
+        content.className = 'grid videos';
+        content.replaceChildren(...skeletonCards(8));
         try { this.results = await api(`/api/yt/search?q=${encodeURIComponent(this.query)}`); this.fillVideos(content, this.results); }
         catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
       } }, 'Search');
@@ -1777,7 +1817,7 @@ const yt = {
         if (r.continue.length) rows.push(this.row('Continue watching', r.continue));
         if (r.videos.length) rows.push(this.row('From your subscriptions', r.videos));
         r.rows.forEach(({ id, title }) => {
-          const strip = h('div', { class: 'yt-strip' }, h('div', { class: 'empty small' }, 'Loading…'));
+          const strip = h('div', { class: 'yt-strip' }, ...skeletonCards(5));
           const section = h('section', { class: 'yt-row' }, h('h3', null, title), strip);
           rows.push(section);
           api(`/api/yt/row?id=${id}`).then((t) => {
@@ -1891,9 +1931,9 @@ const yt = {
     const seen = hist.find((x) => x.id === v.id);
     const canResume = seen && seen.duration && seen.position > 30 && seen.position < 0.95 * seen.duration;
     const play = async (resume) => {
-      toast(`Starting ${v.title}…`);
-      try { await api('/api/yt/play', { ...v, resume }); plexv.watchPlayer(); }
-      catch (err) { toast(err.message); }
+      starting.show(v.title, v.thumb.replace('hqdefault', 'maxresdefault'), v.thumb);
+      try { await api('/api/yt/play', { ...v, resume }); starting.untilPlaying(); plexv.watchPlayer(); }
+      catch (err) { starting.hide(); toast(err.message); }
     };
     const thumb = h('div', { class: 'yt-hero' });
     thumb.style.backgroundImage = `url("${v.thumb.replace('hqdefault', 'maxresdefault')}"), url("${v.thumb}")`;
@@ -1936,7 +1976,8 @@ const yt = {
   },
 
   async renderChannel(body, id) {
-    body.replaceChildren(h('div', { class: 'empty' }, 'Loading channel…'));
+    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, h('div', { class: 'yt-avatar skel' }), h('div', { class: 'skel skel-line', style: { width: '320px', height: '44px' } })),
+      h('div', { class: 'grid videos' }, ...skeletonCards(8)));
     let c;
     try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
     const sub = this.subscribeButton(c);
