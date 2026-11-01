@@ -1246,7 +1246,9 @@ def plex_play(body):
 # Subscriptions, history and resume points stay in settings.json.
 
 VENV_BIN = os.path.join(ROOT, 'venv', 'bin')
-YT_FORMAT = 'bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=1080]/b'
+# H.264 (the Pi's hardware decoder) up to 1080p with AAC; live streams don't name their audio codec
+YT_FORMAT = ('bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/bv*[vcodec^=avc1][height<=1080]+ba/'
+             'b[vcodec^=avc1][height<=1080]/b')
 _yt_cache = {}
 _yt_cache_lock = threading.Lock()
 
@@ -1438,9 +1440,67 @@ def _watch_yt(proc, video):
     _push_event('idle')
 
 
+_yt_streams = {}            # video id -> (time, resolved streams) or a threading.Event while being resolved
+_yt_streams_lock = threading.Lock()
+
+
+def _yt_valid_id(vid):
+    return 8 <= len(vid) <= 16 and vid.replace('-', '').replace('_', '').isalnum()
+
+
+def _yt_resolve(vid):
+    """The stream URLs to play, from yt-dlp. Takes ~10 s on a Pi 4 (most of it YouTube's JavaScript challenge), so the
+    details page asks for it ahead of Play (yt_prepare) and the answer is kept for 20 minutes."""
+    while True:
+        with _yt_streams_lock:
+            hit = _yt_streams.get(vid)
+            if isinstance(hit, tuple) and time.time() - hit[0] < 1200:
+                return hit[1]
+            if isinstance(hit, threading.Event):
+                pending = hit
+            else:
+                pending = None
+                done = _yt_streams[vid] = threading.Event()
+        if pending is None:
+            break
+        pending.wait(90)
+    try:
+        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
+                              f'https://www.youtube.com/watch?v={vid}'], timeout=90, env=_yt_env())
+        if code != 0:
+            raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
+        d = json.loads(out)
+        fmts = d.get('requested_formats') or [d]
+        video = next((f for f in fmts if f.get('vcodec') not in (None, 'none')), fmts[0])
+        audio = next((f for f in fmts if f is not video), None)   # (a live stream's audio names no codec)
+        streams = {'video': video['url'], 'audio': audio['url'] if audio else None,
+                   'headers': video.get('http_headers') or {}, 'live': bool(d.get('is_live')),
+                   'duration': d.get('duration')}
+        with _yt_streams_lock:
+            _yt_streams[vid] = (time.time(), streams)
+            for k in [k for k, v in _yt_streams.items() if isinstance(v, tuple) and time.time() - v[0] > 1200]:
+                del _yt_streams[k]
+        return streams
+    except BaseException:
+        with _yt_streams_lock:
+            if _yt_streams.get(vid) is done:
+                del _yt_streams[vid]
+        raise
+    finally:
+        done.set()
+
+
+def yt_prepare(body):
+    vid = str(body.get('id') or '')
+    if not _yt_valid_id(vid):
+        raise ApiError('not a video id')
+    threading.Thread(target=lambda: _safe(lambda: _yt_resolve(vid), None), daemon=True).start()
+    return {'ok': True}
+
+
 def yt_play(body):
     vid = str(body.get('id') or '')
-    if not (8 <= len(vid) <= 16) or not vid.replace('-', '').replace('_', '').isalnum():
+    if not _yt_valid_id(vid):
         raise ApiError('not a video id')
     if player_running():
         raise ApiError('Something is already playing', 409)
@@ -1455,13 +1515,25 @@ def yt_play(body):
     os.makedirs(CONF_DIR, exist_ok=True)
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
-    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
-           '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', f'--ytdl-format={YT_FORMAT}',
-           f'--script-opts=ytdl_hook-ytdl_path={_ytdlp()}', '--input-default-bindings=no', f'--input-conf={input_conf}',
-           f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1',
-           f'--start={start:.1f}', f'https://www.youtube.com/watch?v={vid}']
     if FAKE:
         return {'ok': True, 'title': title}
+    streams = _yt_resolve(vid)
+    hdr = streams['headers']
+    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no', '--ytdl=no',
+           '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', '--input-default-bindings=no', f'--input-conf={input_conf}',
+           f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1']
+    if hdr.get('User-Agent'):
+        cmd.append(f"--user-agent={hdr['User-Agent']}")
+    for k in ('Accept-Language', 'Sec-Fetch-Mode'):
+        if hdr.get(k):
+            cmd.append(f'--http-header-fields-append={k}: {hdr[k]}')
+    if streams['audio']:
+        cmd.append(f"--audio-file={streams['audio']}")
+    if not streams['live']:
+        cmd.append(f'--start={start:.1f}')
+    cmd.append(streams['video'])
+    if player_running():   # (something started while the streams were looked up)
+        raise ApiError('Something is already playing', 409)
     env = wayland_env()
     env['PATH'] = VENV_BIN + os.pathsep + env.get('PATH', '')
     _push_event('busy')
@@ -1553,6 +1625,7 @@ ROUTES_POST = {
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
     '/api/yt/play': yt_play,
+    '/api/yt/prepare': yt_prepare,
     '/api/yt/subscribe': yt_subscribe,
     '/api/yt/import': yt_import,
     '/api/player/stop': lambda b: (player_stop(), {'ok': True})[1],

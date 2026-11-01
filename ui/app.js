@@ -1670,11 +1670,13 @@ const yt = {
   },
 
   async renderVideo(body, v) {
+    api('/api/yt/prepare', { id: v.id }).catch(() => {});   // look up the streams now: Play then starts at once
     const hist = await api('/api/yt/history').catch(() => []);
     const seen = hist.find((x) => x.id === v.id);
     const canResume = seen && seen.duration && seen.position > 30 && seen.position < 0.95 * seen.duration;
     const play = async (resume) => {
-      try { await api('/api/yt/play', { ...v, resume }); toast(`Starting ${v.title}…`); plexv.watchPlayer(); }
+      toast(`Starting ${v.title}…`);
+      try { await api('/api/yt/play', { ...v, resume }); plexv.watchPlayer(); }
       catch (err) { toast(err.message); }
     };
     const thumb = h('div', { class: 'yt-hero' });
