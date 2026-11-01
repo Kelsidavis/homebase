@@ -1551,7 +1551,8 @@ def _yt_mark_watched(vid):
 
 
 def _ytdlp_json(args, timeout=40):
-    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args],
+    # (niced, like all of Home Base's yt-dlp runs: a playing video's sound and picture come first)
+    code, out, err = run(['nice', '-n', '10', _ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args],
                          timeout=timeout, env=_yt_env())
     if code != 0:
         raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
@@ -1677,6 +1678,8 @@ def _yt_warm_topics():
     time.sleep(20)
     while True:
         for i in range(len(YT_TOPICS)):
+            while player_running():   # (not while a video plays: the Pi's CPU is the video's)
+                time.sleep(30)
             with _yt_cache_lock:   # (refresh before the old rows expire: never a cold load on screen)
                 for k in [k for k in _yt_cache if k[:2] == ('topic', YT_TOPICS[i][1])]:
                     del _yt_cache[k]
@@ -1824,7 +1827,7 @@ def _yt_resolve(vid):
             break
         pending.wait(90)
     try:
-        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
+        code, out, err = run(['nice', '-n', '10', _ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
                               f'https://www.youtube.com/watch?v={vid}'], timeout=90, env=_yt_env())
         if code != 0:
             raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
@@ -1909,7 +1912,9 @@ def _yt_update_tools():
     """YouTube changes often and yt-dlp follows: update it (and its solver scripts) once a day."""
     pip = os.path.join(VENV_BIN, 'pip')
     while os.path.exists(pip):
-        run([pip, 'install', '-q', '-U', 'yt-dlp[default]'], timeout=600, env=_yt_env())
+        while player_running():
+            time.sleep(60)
+        run(['nice', '-n', '15', pip, 'install', '-q', '-U', 'yt-dlp[default]'], timeout=600, env=_yt_env())
         time.sleep(24 * 3600)
 
 

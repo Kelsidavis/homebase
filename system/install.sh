@@ -24,6 +24,9 @@ if [ "${SKIP_APT:-0}" != 1 ]; then
     cage chromium wlr-randr pipewire pipewire-pulse wireplumber curl \
     mpv libmpv2 python3-venv fonts-dejavu-core fonts-liberation2 v4l-utils
 fi
+# Real-time scheduling for PipeWire's audio thread (the pipewire group's limits): without it, sound crackles
+# whenever the CPU is busy.
+getent group pipewire >/dev/null && adduser "$USER_NAME" pipewire >/dev/null
 
 # Application files
 install -d -o "$USER_NAME" -g "$USER_NAME" "$APP"
