@@ -498,3 +498,7 @@ body[data-wallpaper="art"] #wallpaper .blob { opacity: 0.25; }
 .detail-tagline { font-size: 28px; font-style: italic; color: var(--text-2); }
 .detail-summary { font-size: 27px; line-height: 1.5; color: var(--text-2); max-width: 1100px; display: -webkit-box; -webkit-line-clamp: 7; -webkit-box-orient: vertical; overflow: hidden; }
 .detail-actions { display: flex; gap: 18px; margin-top: 16px; }
+
+/* while a video or game has the screen, the home screen draws nothing that moves */
+body.busy #wallpaper { display: none; }
+body.busy .ticker .run, body.busy .view { animation-play-state: paused; }

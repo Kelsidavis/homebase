@@ -1109,6 +1109,7 @@ def _watch_player(proc, server, rating_key, duration_ms):
     with _player_lock:
         if _player['proc'] is proc:
             _player.update(proc=None, title=None, rating_key=None)
+    _push_event('idle')
 
 
 def plex_play(body):
@@ -1145,6 +1146,7 @@ def plex_play(body):
            f'--start={offset / 1000:.1f}', url]
     if FAKE:
         return {'ok': True, 'title': title}
+    _push_event('busy')   # the home screen pauses its animations: the GPU is the video's
     with _player_lock:
         proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _player.update(proc=proc, title=title, rating_key=rating_key, position=offset, paused=False,

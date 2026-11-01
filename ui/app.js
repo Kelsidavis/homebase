@@ -890,6 +890,7 @@ const viz = {
 
   frame() {
     requestAnimationFrame(() => this.frame());
+    if (document.body.classList.contains('busy')) return;
     const canvases = [];
     if (this.fullOpen) canvases.push($('#viz-full canvas'));
     const inline = $('#viz-canvas');
@@ -1606,6 +1607,9 @@ async function pollVolume() {
 let eventSeq = null;
 const REMOTE = {
   home: () => goHome(),
+  // a video or game has the screen: stop the wallpaper, ticker and visualizer drawing behind it
+  busy: () => document.body.classList.add('busy'),
+  idle: () => document.body.classList.remove('busy'),
   playpause: () => music.toggle(),
   play: () => { if (music.index >= 0 && audio.paused) music.toggle(); },
   pause: () => { if (music.index >= 0 && !audio.paused) music.toggle(); },
