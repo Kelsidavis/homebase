@@ -470,7 +470,6 @@ def system_stats(q):
                 'gpu_total': mem.get('CmaTotal', 0), 'gpu_used': mem.get('CmaTotal', 0) - mem.get('CmaFree', 0)},
         'throttle': {'now': [n for b, n in names.items() if flags & (1 << b)],
                      'since_boot': [n for b, n in names.items() if flags & (1 << (b + 16))]},
-        'unit': weather_unit(load_settings()),   # (°F or °C as the weather shows it)
         'uptime': float(_read('/proc/uptime', '0').split()[0] or 0),
         'load': [float(x) for x in _read('/proc/loadavg', '0 0 0').split()[:3]],
     }

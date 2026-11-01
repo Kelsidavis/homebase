@@ -483,7 +483,7 @@ async function renderSystem(panel) {
     if (state.view !== 'settings' || state.settingsTab !== 'system' || !panel.isConnected) return false;
     let s;
     try { s = await api('/api/system'); } catch { return true; }
-    const t = s.unit === 'f' ? `${Math.round(s.temp * 9 / 5 + 32)}°F` : `${Math.round(s.temp)}°C`;
+    const t = `${Math.round(s.temp)}°C`;   // (always Celsius: the chip's limits are given in it)
     temp.set(s.temp / 85 * 100, t, s.temp >= 80 ? 'Hot: the Pi slows itself down at 80–85°C' : s.temp >= 70 ? 'Warm' : 'Normal', s.temp >= 75);
     cpu.set(s.cpu.total, `${Math.round(s.cpu.total)}%`, s.cpu.mhz ? `${s.cpu.mhz} MHz${s.cpu.max_mhz ? ` of ${s.cpu.max_mhz}` : ''} · load ${s.load.map((x) => x.toFixed(2)).join(' ')}` : '', s.cpu.total > 90);
     cores.replaceChildren(...s.cpu.cores.map((c, i) => h('div', { class: 'sys-core', title: `Core ${i + 1}` }, h('i', { style: { height: `${Math.max(2, c)}%` } }), h('span', null, String(i + 1)))));
@@ -1296,7 +1296,7 @@ const music = {
     this.ensureGraph();
     audio.src = this.srcFor(t);
     audio.play().catch((err) => toast(`Can't play this track: ${err.message}`));
-    const art = this.thumb(t.parentThumb || t.thumb, 800);
+    const art = this.thumb(t.parentThumb || t.thumb, 48);   // (tiny: stretched, it is the blurred backdrop)
     const wp = $('#wallpaper .art');
     if (art) { wp.style.backgroundImage = `url("${art}")`; wp.classList.add('on'); }
     $('#tile-music-sub').textContent = `Playing: ${t.title} · ${t.grandparentTitle || ''}`;
@@ -1660,7 +1660,7 @@ const plexv = {
     if (src) poster.style.backgroundImage = `url("${src}")`;
     const art = it.art || it.grandparentArt;
     const wp = $('#wallpaper .art');
-    if (art && state.settings.wallpaper === 'art') { wp.style.backgroundImage = `url("${music.thumb(art, 1280)}")`; wp.classList.add('on'); }
+    if (art && state.settings.wallpaper === 'art') { wp.style.backgroundImage = `url("${music.thumb(art, 48)}")`; wp.classList.add('on'); }
     const mins = it.duration ? Math.round(it.duration / 60000) : 0;
     const meta = [it.type === 'episode' ? `S${it.parentIndex}·E${it.index}` : null, it.year, mins ? `${Math.floor(mins / 60) ? `${Math.floor(mins / 60)} h ` : ''}${mins % 60} min` : null,
       it.contentRating, it.Media && it.Media[0] && it.Media[0].videoResolution ? `${String(it.Media[0].videoResolution).toUpperCase()}` : null].filter(Boolean).join(' · ');
@@ -1938,6 +1938,53 @@ function focusIn(sel) {
   if (el) el.focus();
 }
 
+/* ==================================================================== ambient wallpaper */
+
+// Three soft blobs of the theme's ambient colours drifting slowly (as the old blurred CSS blobs did), drawn into a
+// 160 x 90 canvas ten times a second; the browser stretches it smoothly to the screen.
+const ambient = {
+  start() {
+    const c = $('#wallpaper canvas.ambient');
+    if (!c) return;
+    const ctx = c.getContext('2d');
+    const W = c.width, H = c.height, vw = W / 100, vh = H / 100;
+    const blobs = [   // centre, drift, scale at the far end, period (s)
+      { v: '--amb-1', x: 15 * vw, y: 5 * vw, dx: 18 * vw, dy: 14 * vh, s: 1.15, p: 48 },
+      { v: '--amb-2', x: 90 * vw, y: 10 * vh + 35 * vw, dx: -16 * vw, dy: 20 * vh, s: 0.9, p: 62 },
+      { v: '--amb-3', x: 55 * vw, y: H + 10 * vw, dx: 12 * vw, dy: -18 * vh, s: 1.1, p: 55 },
+    ];
+    const rgba = (css, a) => {
+      ctx.fillStyle = '#000';
+      ctx.fillStyle = css || '#000';
+      const f = ctx.fillStyle;
+      if (f[0] === '#') { const n = parseInt(f.slice(1), 16); return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`; }
+      const m = f.match(/[\d.]+/g);
+      return `rgba(${m[0]},${m[1]},${m[2]},${a * (m[3] === undefined ? 1 : Number(m[3]))})`;
+    };
+    const draw = () => {
+      const off = document.hidden || document.body.classList.contains('busy') || document.body.dataset.wallpaper === 'none';
+      if (!off) {
+        const t = performance.now() / 1000;
+        const css = getComputedStyle(document.body);
+        ctx.clearRect(0, 0, W, H);
+        for (const b of blobs) {
+          const ph = (t / b.p) % 2, x = ph < 1 ? ph : 2 - ph, e = (1 - Math.cos(Math.PI * x)) / 2;   // ease in-out, back and forth
+          const cx = b.x + b.dx * e, cy = b.y + b.dy * e, r = 44 * vw * (1 + (b.s - 1) * e);
+          const col = css.getPropertyValue(b.v).trim();
+          const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+          g.addColorStop(0, rgba(col, 0.55));
+          g.addColorStop(0.5, rgba(col, 0.4));
+          g.addColorStop(1, rgba(col, 0));
+          ctx.fillStyle = g;
+          ctx.fillRect(0, 0, W, H);
+        }
+      }
+      setTimeout(draw, off ? 1000 : 100);
+    };
+    draw();
+  },
+};
+
 /* ==================================================================== volume */
 
 // The backend changes the volume when a remote's volume keys are pressed; show it briefly.
@@ -1995,6 +2042,7 @@ async function start() {
   applyAppearance();
   tickClock();
   setInterval(tickClock, 1000);
+  ambient.start();
   if (state.settings.setup_done) show('home');
   else { show('setup'); setup.go(0); }
   refreshWeather();
