@@ -1277,8 +1277,72 @@ def _yt_cached(key, ttl, fn):
     return value
 
 
+# ---- the viewer's own YouTube account: signed in through Home Base's browser (Google's own sign-in page), its
+# cookies read by yt-dlp. They stay in the browser profile on this box.
+CHROMIUM_PROFILE = os.path.expanduser('~/.config/homebase-chromium')
+_yt_auth = {'checked': 0.0, 'signed_in': False, 'just': None}
+
+
+def yt_signed_in(fresh=False):
+    if not fresh and time.time() - _yt_auth['checked'] < 30:
+        return _yt_auth['signed_in']
+    import shutil, sqlite3, tempfile
+    signed = False
+    db = os.path.join(CHROMIUM_PROFILE, 'Default', 'Cookies')
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            for suffix in ('', '-journal', '-wal'):
+                if os.path.exists(db + suffix):
+                    shutil.copy(db + suffix, os.path.join(td, 'Cookies' + suffix))
+            con = sqlite3.connect(os.path.join(td, 'Cookies'))
+            try:
+                signed = con.execute("select count(*) from cookies where host_key like '%youtube.com' "
+                                     "and name in ('SAPISID', 'LOGIN_INFO')").fetchone()[0] > 0
+            finally:
+                con.close()
+    except (OSError, sqlite3.Error):
+        signed = False
+    if signed != _yt_auth['signed_in']:
+        with _yt_cache_lock:
+            _yt_cache.clear()   # (what was fetched signed out - or in - no longer applies)
+    _yt_auth.update(checked=time.time(), signed_in=signed)
+    return signed
+
+
+def _yt_cookie_args():
+    return ['--cookies-from-browser', f'chromium:{CHROMIUM_PROFILE}'] if yt_signed_in() else []
+
+
+def yt_account(q):
+    just, _yt_auth['just'] = _yt_auth['just'], None
+    return {'signed_in': yt_signed_in(), 'just': just}
+
+
+def _yt_await_account(want):
+    """While Google's sign-in (or sign-out) page is open: once the account's cookies have (dis)appeared, bring the
+    browser back to Home Base, which opens YouTube."""
+    deadline = time.time() + 15 * 60
+    while time.time() < deadline:
+        time.sleep(3)
+        if yt_signed_in(fresh=True) == want:
+            _yt_auth['just'] = 'signed in' if want else 'signed out'
+            time.sleep(2)
+            run(['pkill', '-x', 'chromium'])   # (the session starts it again on Home Base)
+            return
+
+
+def yt_signin(body):
+    want = not body.get('out')
+    threading.Thread(target=_yt_await_account, args=(want,), daemon=True).start()
+    after = urllib.parse.quote('https://www.youtube.com/', safe='')
+    if want:
+        return {'url': f'https://accounts.google.com/ServiceLogin?service=youtube&passive=true&continue={after}'}
+    return {'url': f'https://www.youtube.com/logout'}
+
+
 def _ytdlp_json(args, timeout=40):
-    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args], timeout=timeout, env=_yt_env())
+    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *_yt_cookie_args(), *args],
+                         timeout=timeout, env=_yt_env())
     if code != 0:
         raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
     return json.loads(out)
@@ -1325,7 +1389,7 @@ def yt_channel(q):
                 'avatar': _yt_avatar(d), 'videos': vids}
     data = _yt_cached(('channel', cid), 1800, fetch)
     subs = load_settings()['youtube']['subs']
-    return dict(data, subscribed=any(sub.get('id') == cid for sub in subs))
+    return dict(data, subscribed=any(sub.get('id') == cid for sub in subs), account=yt_signed_in())
 
 
 def _yt_feed(cid):
@@ -1381,14 +1445,27 @@ def _yt_topic_videos(i):
     return _yt_cached(('topic', query, country), 3 * 3600, fetch)
 
 
-def yt_topic(q):
+def _yt_account_feed(url, ttl, n=40):
+    def fetch():
+        d = _ytdlp_json(['--playlist-items', f'1-{n}', url], timeout=60)
+        return [_yt_video(e) for e in d.get('entries') or []
+                if e.get('id') and '/shorts/' not in str(e.get('url') or '') and e.get('ie_key') in (None, 'Youtube')]
+    return _yt_cached(('account', url), ttl, fetch)
+
+
+def yt_row(q):
+    rid = (q.get('id') or [''])[0]
+    if rid == 'rec':
+        return {'videos': _yt_account_feed(':ytrec', 900)}
+    if rid == 'subs':
+        return {'videos': _yt_account_feed(':ytsubs', 600)}
     try:
-        i = int((q.get('i') or ['-1'])[0])
+        i = int(rid.removeprefix('topic'))
     except ValueError:
         i = -1
-    if not 0 <= i < len(YT_TOPICS):
-        raise ApiError('no such topic')
-    return {'title': YT_TOPICS[i][0], 'videos': _yt_topic_videos(i)}
+    if not rid.startswith('topic') or not 0 <= i < len(YT_TOPICS):
+        raise ApiError('no such row')
+    return {'videos': _yt_topic_videos(i)}
 
 
 def _yt_warm_topics():
@@ -1405,15 +1482,18 @@ def _yt_warm_topics():
 
 def yt_home(q):
     st = load_settings()['youtube']
-    subs = st['subs']
-    from concurrent.futures import ThreadPoolExecutor
-    videos = []
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        for feed in pool.map(lambda sub: _safe(lambda: _yt_feed(sub['id']), []), subs):
-            videos.extend(feed)
-    videos.sort(key=lambda v: -(v.get('published') or 0))
     resume = [h for h in st['history'] if h.get('duration') and 30 < h.get('position', 0) < 0.95 * h['duration']]
-    return {'subs': len(subs), 'videos': videos[:80], 'continue': resume[:20], 'topics': [t[0] for t in YT_TOPICS]}
+    rows = [{'id': f'topic{i}', 'title': t[0]} for i, t in enumerate(YT_TOPICS)]
+    videos = []
+    if yt_signed_in():
+        rows = [{'id': 'rec', 'title': 'Recommended'}, {'id': 'subs', 'title': 'Subscriptions'}] + rows
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            for feed in pool.map(lambda sub: _safe(lambda: _yt_feed(sub['id']), []), st['subs']):
+                videos.extend(feed)
+        videos.sort(key=lambda v: -(v.get('published') or 0))
+    return {'signed_in': yt_signed_in(), 'videos': videos[:80], 'continue': resume[:20], 'rows': rows}
 
 
 def _safe(fn, default):
@@ -1424,6 +1504,13 @@ def _safe(fn, default):
 
 
 def yt_subs(q):
+    if yt_signed_in():   # the account's channels, from its subscriptions feed (newest uploads first)
+        seen, out = set(), []
+        for v in _safe(lambda: _yt_account_feed(':ytsubs', 600, n=150), []):
+            if v['channel_id'] and v['channel_id'] not in seen:
+                seen.add(v['channel_id'])
+                out.append({'id': v['channel_id'], 'name': v['channel'], 'avatar': None})
+        return sorted(out, key=lambda c: c['name'].lower())
     return load_settings()['youtube']['subs']
 
 
@@ -1458,7 +1545,15 @@ def yt_import(body):
 
 
 def yt_history(q):
-    return load_settings()['youtube']['history']
+    local = load_settings()['youtube']['history']
+    if not yt_signed_in():
+        return local
+    where = {h['id']: h for h in local}   # (resume points are kept here; the account's history lists what was watched)
+    out = []
+    for v in _safe(lambda: _yt_account_feed(':ythistory', 120, n=60), []):
+        h = where.get(v['id'])
+        out.append(dict(v, position=h['position'], duration=h.get('duration') or v.get('duration')) if h else v)
+    return out or local
 
 
 def _yt_remember(video, position, duration):
@@ -1514,7 +1609,7 @@ def _yt_resolve(vid):
             break
         pending.wait(90)
     try:
-        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
+        code, out, err = run([_ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT, *_yt_cookie_args(),
                               f'https://www.youtube.com/watch?v={vid}'], timeout=90, env=_yt_env())
         if code != 0:
             raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
@@ -1590,6 +1685,10 @@ def yt_play(body):
         proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         _player.update(proc=proc, title=title, rating_key=None, position=start * 1000, paused=False, duration=0)
     threading.Thread(target=_watch_yt, args=(proc, video), daemon=True).start()
+    if yt_signed_in():   # (into the account's watch history, as YouTube's own apps do)
+        threading.Thread(target=run, args=(['nice', '-n', '10', _ytdlp(), '--mark-watched', '--simulate', '--no-warnings',
+                                            *_yt_cookie_args(), f'https://www.youtube.com/watch?v={vid}'],),
+                         kwargs={'timeout': 120, 'env': _yt_env()}, daemon=True).start()
     return {'ok': True, 'title': title, 'start': start}
 
 
@@ -1626,7 +1725,8 @@ ROUTES_GET = {
     '/api/yt/search': yt_search,
     '/api/yt/channel': yt_channel,
     '/api/yt/home': yt_home,
-    '/api/yt/topic': yt_topic,
+    '/api/yt/row': yt_row,
+    '/api/yt/account': yt_account,
     '/api/yt/subs': yt_subs,
     '/api/yt/history': yt_history,
     '/api/player': lambda q: player_status(),
@@ -1675,6 +1775,7 @@ ROUTES_POST = {
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
     '/api/yt/play': yt_play,
+    '/api/yt/signin': yt_signin,
     '/api/yt/prepare': yt_prepare,
     '/api/yt/subscribe': yt_subscribe,
     '/api/yt/import': yt_import,

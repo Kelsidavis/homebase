@@ -1610,6 +1610,12 @@ const yt = {
     const bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
       class: `pill${this.tab === id ? ' selected' : ''}`, 'data-yt-tab': id, onclick: () => { this.tab = id; this.render(); },
     }, label)));
+    const account = h('button', { class: 'pill', style: { marginLeft: 'auto' }, onclick: () => this.signIn(account.dataset.signedIn === '1') }, '…');
+    bar.append(account);
+    api('/api/yt/account').then((a) => {
+      account.dataset.signedIn = a.signed_in ? '1' : '0';
+      account.textContent = a.signed_in ? 'Sign out' : 'Sign in with Google';
+    }).catch(() => account.remove());
     if (onTab) setTimeout(() => { const t = body.querySelector(`[data-yt-tab="${onTab}"]`); if (t) t.focus(); }, 0);
     const content = h('div', { class: 'grid videos' }, h('div', { class: 'empty' }, 'Loading…'));
     if (this.tab === 'search') {
@@ -1634,11 +1640,11 @@ const yt = {
         const rows = [];
         if (r.continue.length) rows.push(this.row('Continue watching', r.continue));
         if (r.videos.length) rows.push(this.row('From your subscriptions', r.videos));
-        r.topics.forEach((title, i) => {
+        r.rows.forEach(({ id, title }) => {
           const strip = h('div', { class: 'yt-strip' }, h('div', { class: 'empty small' }, 'Loading…'));
           const section = h('section', { class: 'yt-row' }, h('h3', null, title), strip);
           rows.push(section);
-          api(`/api/yt/topic?i=${i}`).then((t) => {
+          api(`/api/yt/row?id=${id}`).then((t) => {
             if (!t.videos.length) { section.remove(); return; }
             strip.replaceChildren(...t.videos.map((v) => this.card(v)));
             this.focusStart();
@@ -1662,6 +1668,15 @@ const yt = {
         this.fillVideos(content, hist);
       }
     } catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+  },
+
+  // Google's own sign-in page in this browser; Home Base comes back by itself once the account is signed in (or out)
+  async signIn(out) {
+    try {
+      const r = await api('/api/yt/signin', { out });
+      toast(out ? 'Signing out…' : 'Sign in with your Google account. Home Base comes back when you are done.');
+      setTimeout(() => { location.href = r.url; }, out ? 300 : 1800);
+    } catch (err) { toast(err.message); }
   },
 
   fillVideos(content, videos) {
@@ -1723,7 +1738,8 @@ const yt = {
     body.replaceChildren(h('div', { class: 'empty' }, 'Loading channel…'));
     let c;
     try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
-    const sub = h('button', { class: c.subscribed ? 'pill' : 'primary', style: { height: '72px' }, onclick: async () => {
+    // (signed in, subscriptions are the account's own, managed on YouTube: no local Subscribe button)
+    const sub = c.account ? null : h('button', { class: c.subscribed ? 'pill' : 'primary', style: { height: '72px' }, onclick: async () => {
       try {
         await api('/api/yt/subscribe', { id: c.id, name: c.name, avatar: c.avatar, subscribe: !c.subscribed });
         c.subscribed = !c.subscribed;
@@ -1818,6 +1834,12 @@ async function start() {
   refreshNetworkChip();
   refreshNews();
   refreshCast();
+  api('/api/yt/account').then((a) => {   // back from Google's sign-in page: straight to YouTube
+    if (!a.just) return;
+    yt.tab = 'home';
+    show('youtube');
+    toast(a.just === 'signed in' ? 'Signed in to YouTube' : 'Signed out of YouTube');
+  }).catch(() => {});
   api('/api/plex/status').then((p) => {
     if (p.server) {
       $('#tile-plex-sub').textContent = `Movies and shows on ${p.server}`;
