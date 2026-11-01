@@ -1,0 +1,37 @@
+Window.SetBackgroundTopColor(0.07, 0.09, 0.13);
+Window.SetBackgroundBottomColor(0.03, 0.04, 0.07);
+
+cx = Window.GetX() + Window.GetWidth() / 2;
+cy = Window.GetY() + Window.GetHeight() / 2;
+
+title = Image.Text("Home Base", 0.93, 0.95, 0.98, 1, "Sans Bold 40");
+title_sprite = Sprite(title);
+title_sprite.SetPosition(cx - title.GetWidth() / 2, cy - title.GetHeight() - 36, 1);
+
+dot = Image("dot.png");
+i = 0;
+while (i < 3) {
+  dots[i] = Sprite(dot);
+  dots[i].SetPosition(cx - 56 + i * 56 - dot.GetWidth() / 2, cy + 24, 2);
+  dots[i].SetOpacity(0.25);
+  i++;
+}
+
+frame = 0;
+fun refresh_callback() {
+  frame++;
+  j = 0;
+  while (j < 3) {
+    phase = frame / 50 * 2 * Math.Pi - j * 0.9;
+    dots[j].SetOpacity(0.25 + 0.75 * (0.5 + 0.5 * Math.Sin(phase)));
+    j++;
+  }
+}
+Plymouth.SetRefreshFunction(refresh_callback);
+
+fun message_callback(text) {
+  msg = Image.Text(text, 0.6, 0.65, 0.72, 1, "Sans 16");
+  msg_sprite = Sprite(msg);
+  msg_sprite.SetPosition(cx - msg.GetWidth() / 2, Window.GetY() + Window.GetHeight() - 80, 3);
+}
+Plymouth.SetMessageFunction(message_callback);

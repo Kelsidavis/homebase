@@ -1,0 +1,8 @@
+[Plymouth Theme]
+Name=Home Base
+Description=Home Base boot screen: the name and three pulsing dots, so a booting box never looks stalled
+ModuleName=script
+
+[script]
+ImageDir=/usr/share/plymouth/themes/homebase
+ScriptFile=/usr/share/plymouth/themes/homebase/homebase.script

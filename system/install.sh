@@ -22,11 +22,25 @@ if [ "${SKIP_APT:-0}" != 1 ]; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     cage chromium wlr-randr pipewire pipewire-pulse wireplumber curl \
-    mpv libmpv2 python3-venv fonts-dejavu-core fonts-liberation2 v4l-utils
+    mpv libmpv2 python3-venv fonts-dejavu-core fonts-liberation2 v4l-utils plymouth plymouth-label
 fi
 # Real-time scheduling for PipeWire's audio thread (the pipewire group's limits): without it, sound crackles
 # whenever the CPU is busy.
 getent group pipewire >/dev/null && adduser "$USER_NAME" pipewire >/dev/null
+
+# Boot splash: the Home Base name and three pulsing dots from early boot, so a starting box never looks stalled on a
+# black screen. Its last frame stays up (--retain-splash) until Home Base takes over the display.
+if command -v plymouth-set-default-theme >/dev/null 2>&1; then
+  install -d /usr/share/plymouth/themes/homebase
+  install -m 644 "$SRC"/system/plymouth/homebase/* /usr/share/plymouth/themes/homebase/
+  plymouth-set-default-theme homebase
+  install -d /etc/systemd/system/plymouth-quit.service.d
+  printf '[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' \
+    > /etc/systemd/system/plymouth-quit.service.d/homebase.conf
+  CMDLINE=/boot/firmware/cmdline.txt
+  if [ -f "$CMDLINE" ] && ! grep -qw splash "$CMDLINE"; then sed -i '1 s/$/ splash/' "$CMDLINE"; fi
+  update-initramfs -u -k all >/dev/null   # (the splash starts from the initramfs)
+fi
 
 # Application files
 install -d -o "$USER_NAME" -g "$USER_NAME" "$APP"

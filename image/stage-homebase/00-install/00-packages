@@ -10,3 +10,5 @@ python3-venv
 fonts-dejavu-core
 fonts-liberation2
 v4l-utils
+plymouth
+plymouth-label
