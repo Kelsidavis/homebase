@@ -1,0 +1,12 @@
+[Unit]
+Description=Grow the root partition and file system to fill the SD card (first boot)
+ConditionPathExists=!/var/lib/homebase/expanded
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homebase-expand
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

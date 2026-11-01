@@ -1,0 +1,13 @@
+#!/bin/sh
+# Grow the root partition to the end of the SD card and the file system with it, once, on a running system.
+# (Used instead of the initramfs resize, whose disk ID change could leave the boot command line pointing at an ID
+# the card did not get, so the next boot waited for a root device that never appeared.)
+set -e
+ROOT_PART=$(findmnt -n -o SOURCE /)
+ROOT_DEV=/dev/$(lsblk -no pkname "$ROOT_PART")
+PART_NUM=$(cat "/sys/class/block/$(basename "$ROOT_PART")/partition")
+echo ", +" | sfdisk -N "$PART_NUM" --no-reread --force "$ROOT_DEV"
+partx -u "$ROOT_DEV"
+resize2fs "$ROOT_PART"
+install -d /var/lib/homebase
+touch /var/lib/homebase/expanded

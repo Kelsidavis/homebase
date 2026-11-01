@@ -566,12 +566,18 @@ def auto_scale(width):
 
 
 def apply_preferred_mode():
-    """No saved choice yet: use the TV's own preferred mode. Pi 4 can't drive
-    4K above 30 Hz without extra configuration, so cap 4K at 30 Hz."""
+    """No saved choice yet: 1080p at 60 Hz when the TV offers it - every TV and cable shows it, while a 4K TV's own
+    preferred mode can leave the screen black over an older cable or adapter (4K is a choice in Settings, tried
+    with a 15-second revert). Otherwise the TV's preferred mode, with 4K capped at 30 Hz."""
     info = display_info()
     modes = info.get('modes') or []
     if not modes:
         raise ApiError('No display modes reported', 500)
+    full_hd = [m for m in modes if m['width'] == 1920 and m['height'] == 1080 and 59 <= m['refresh'] <= 61]
+    if full_hd:
+        m = min(full_hd, key=lambda m: abs(m['refresh'] - 60))
+        apply_mode(1920, 1080, m['refresh'], 1.0)
+        return
     pref = next((m for m in modes if m.get('preferred')), modes[0])
     w, hgt, r = pref['width'], pref['height'], pref['refresh']
     if w >= 3200 and r > 31:
