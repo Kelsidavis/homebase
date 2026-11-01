@@ -340,7 +340,7 @@ async function refreshNews() {
   ticker.hidden = false;
   requestAnimationFrame(() => {
     const half = run.scrollWidth / 2;
-    run.style.setProperty('--ticker-duration', `${Math.max(40, half / 95)}s`);
+    run.style.setProperty('--ticker-duration', `${Math.max(40, half / 130)}s`);   // (130 px/s: the same reading pace at 36 px text)
   });
 }
 

@@ -245,20 +245,20 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
 .tile.cast { --tile-color: var(--tile-cast); }
 
 .ticker {
-  display: flex; align-items: center; gap: 24px; height: 68px; padding-left: 10px;
+  display: flex; align-items: center; gap: 28px; height: 88px; padding-left: 12px;
   border-radius: 999px; background: color-mix(in srgb, var(--surface) 88%, transparent); overflow: hidden;
 }
 .ticker .label {
-  flex-shrink: 0; display: flex; align-items: center; height: 48px; padding: 0 22px; border-radius: 999px;
-  background: var(--accent); color: var(--accent-ink); font-size: 22px; font-weight: 600; letter-spacing: 1px;
+  flex-shrink: 0; display: flex; align-items: center; height: 64px; padding: 0 28px; border-radius: 999px;
+  background: var(--accent); color: var(--accent-ink); font-size: 28px; font-weight: 600; letter-spacing: 1px;
 }
-.ticker .track { flex-grow: 1; position: relative; height: 68px; overflow: hidden; }
+.ticker .track { flex-grow: 1; position: relative; height: 88px; overflow: hidden; }
 .ticker .run {
-  position: absolute; top: 0; left: 0; height: 68px; display: flex; align-items: center; gap: 72px;
-  white-space: nowrap; font-size: 26px; color: var(--text-2);
+  position: absolute; top: 0; left: 0; height: 88px; display: flex; align-items: center; gap: 96px;
+  white-space: nowrap; font-size: 36px; color: var(--text-2);
   animation: ticker var(--ticker-duration, 120s) linear infinite;
 }
-.ticker .run .t { color: var(--muted); margin-left: 16px; font-size: 22px; }
+.ticker .run .t { color: var(--muted); margin-left: 20px; font-size: 28px; }
 @keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
 
 .menu {
