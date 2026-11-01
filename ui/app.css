@@ -171,6 +171,7 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
   transition: opacity 260ms ease, transform 320ms cubic-bezier(.2,.8,.2,1), visibility 0s;
 }
 
+.chip[hidden] { display: none; }
 .chip {
   display: inline-flex; align-items: center; gap: 12px; height: 60px; padding: 0 24px;
   border-radius: 999px; background: color-mix(in srgb, var(--surface) 85%, transparent);
@@ -201,13 +202,13 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
 .home-header { display: flex; justify-content: space-between; align-items: flex-start; }
 .clock { font-size: 112px; font-weight: 600; line-height: 1; letter-spacing: -2px; }
 .clock .ampm { font-size: 42px; font-weight: 500; color: var(--muted); margin-left: 12px; letter-spacing: 0; }
-.date { font-size: 32px; color: var(--muted); margin-top: 6px; }
+.date { font-size: 42px; color: var(--muted); margin-top: 8px; }
 .home-right { display: flex; flex-direction: column; align-items: flex-end; gap: 20px; }
 .weather { display: flex; align-items: center; gap: 24px; min-height: 92px; }
 .weather .temp { font-size: 88px; font-weight: 600; line-height: 1; letter-spacing: -2px; }
 .weather .cond { display: flex; flex-direction: column; gap: 6px; }
-.weather .cond .c1 { font-size: 30px; }
-.weather .cond .c2 { font-size: 24px; color: var(--muted); }
+.weather .cond .c1 { font-size: 38px; }
+.weather .cond .c2 { font-size: 32px; color: var(--muted); }
 .weather .hint { font-size: 24px; color: var(--muted); }
 .home-chips { display: flex; gap: 16px; align-items: center; }
 

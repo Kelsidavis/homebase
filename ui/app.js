@@ -317,12 +317,18 @@ async function refreshNetworkChip() {
   try {
     const n = await api('/api/network');
     state.network = n;
-    const txt = n.wifi && n.wifi.connected ? n.wifi.ssid : n.ethernet && n.ethernet.connected ? 'Ethernet' : 'Offline';
-    $('#chip-net-text').textContent = txt;
-    $('#chip-net').style.color = txt === 'Offline' ? 'var(--hot)' : '';
+    const online = (n.wifi && n.wifi.connected) || (n.ethernet && n.ethernet.connected);
+    showOffline(!online);
   } catch {
-    $('#chip-net-text').textContent = 'Offline';
+    showOffline(true);
   }
+}
+
+// The home screen shows the connection only when there is none (in red): otherwise it is just clutter
+function showOffline(offline) {
+  $('#chip-net-text').textContent = 'Offline';
+  $('#chip-net').style.color = 'var(--hot)';
+  $('#chip-net').hidden = !offline;
 }
 
 let newsData = null;
