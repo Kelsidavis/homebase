@@ -47,7 +47,8 @@ function toast(msg) {
 const fmtTime = (s) => {
   if (!isFinite(s) || s < 0) return '0:00';
   s = Math.floor(s);
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const mmss = `${String(Math.floor(s / 60) % 60)}:${String(s % 60).padStart(2, '0')}`;
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${mmss.padStart(5, '0')}` : mmss;
 };
 
 const ICON = {
@@ -1605,9 +1606,11 @@ const yt = {
     if (top && top.kind === 'video') return this.renderVideo(body, top.video);
     if (top && top.kind === 'channel') return this.renderChannel(body, top.id);
     const tabs = [['home', 'Home'], ['search', 'Search'], ['subs', 'Subscriptions'], ['history', 'History']];
+    const onTab = document.activeElement && document.activeElement.dataset.ytTab;
     const bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
-      class: `pill${this.tab === id ? ' selected' : ''}`, onclick: () => { this.tab = id; this.render(); },
+      class: `pill${this.tab === id ? ' selected' : ''}`, 'data-yt-tab': id, onclick: () => { this.tab = id; this.render(); },
     }, label)));
+    if (onTab) setTimeout(() => { const t = body.querySelector(`[data-yt-tab="${onTab}"]`); if (t) t.focus(); }, 0);
     const content = h('div', { class: 'grid videos' }, h('div', { class: 'empty' }, 'Loading…'));
     if (this.tab === 'search') {
       const q = h('input', { class: 'text-input', placeholder: 'Search YouTube', value: this.query, 'data-enter': 'yt-go', style: { flexGrow: 1 } });
@@ -1653,6 +1656,8 @@ const yt = {
   fillVideos(content, videos) {
     content.className = 'grid videos';
     if (!videos.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No videos.')); return; }
+    // arriving at the screen (focus still on Home or nowhere): start on the first video
+    setTimeout(() => { if (!$('#youtube-body').contains(document.activeElement)) focusIn('#youtube-body .grid'); }, 100);   // (after show()'s own focus)
     content.replaceChildren(...videos.map((v) => {
       const img = h('div', { class: 'img' });
       img.style.backgroundImage = `url("${v.thumb}")`;

@@ -484,7 +484,7 @@ body[data-wallpaper="art"] #wallpaper .blob { opacity: 0.25; }
 /* ------------------------------------------------------------ plex video */
 
 .grid.posters { grid-template-columns: repeat(7, minmax(0, 1fr)); }
-.grid.posters .poster-wrap { position: relative; }
+.poster-wrap { position: relative; }
 .grid.posters .img { aspect-ratio: 2 / 3; }
 .poster-wrap .prog { position: absolute; left: 10px; right: 10px; bottom: 10px; height: 8px; border-radius: 999px; background: rgba(0,0,0,0.55); overflow: hidden; }
 .poster-wrap .prog i { display: block; height: 100%; background: var(--accent); }
