@@ -1266,7 +1266,12 @@ const music = {
     const upnext = this.queue[nextIdx];
     const playBtn = h('button', { class: 'ctl play', id: 'ctl-play', 'aria-label': 'Play or pause', html: audio.paused ? ICON.play : ICON.pause, onclick: () => this.toggle() });
     const modes = [['spectrum', 'Spectrum'], ['mirror', 'Mirror'], ['wave', 'Wave']];
-    body.replaceChildren(
+    const backBar = h('div', { class: 'lib-tabs', style: { marginBottom: '20px' } },
+      h('button', { class: 'pill', id: 'np-back', onclick: () => { this.mode = 'library'; this.render(); setTimeout(focusFirstContent, 80); } },
+        h('span', { html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>' }),
+        'Back'),
+      h('span', { class: 'crumb' }, this.stack.length ? this.stack[this.stack.length - 1].title : 'Library'));
+    body.replaceChildren(backBar,
       h('div', { class: 'music-top' },
         cover,
         h('div', { class: 'np' },
