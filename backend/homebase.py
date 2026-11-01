@@ -58,6 +58,9 @@ DEFAULTS = {
     # width None means "use the TV's preferred mode" until the user picks one.
     'display': {'width': None, 'height': None, 'refresh': None, 'scale': None, 'edges': 0},
     'plex': {'client_id': None, 'token': None, 'server': None, 'preferred': None},
+    # a Vizio SmartCast TV paired over the network: picture settings Home Base keeps in place
+    # ({"ip", "token", "keep": {"more_picture/backlight_control": "Off", "backlight": 65}}); the token stays here
+    'tv': {'ip': None, 'token': None, 'keep': {}},
 }
 
 # ---------------------------------------------------------------- settings
@@ -872,6 +875,68 @@ def watch_keys():
                     _change_volume(code)
 
 
+# ---------------------------------------------------------------- TV picture keeper (Vizio SmartCast)
+# Some TVs drop edited picture settings (a dynamic backlight comes back on, the backlight to 100) after a power cycle
+# or a signal change. With a paired Vizio SmartCast TV, Home Base puts the chosen values back when the TV turns on and
+# once a minute while it is on, and logs each correction to $XDG_RUNTIME_DIR/homebase-tv.log.
+
+_TV_SSL = None
+
+
+def _tv_request(tv, path, body=None):
+    global _TV_SSL
+    if _TV_SSL is None:
+        import ssl
+        _TV_SSL = ssl.create_default_context()
+        _TV_SSL.check_hostname = False
+        _TV_SSL.verify_mode = ssl.CERT_NONE   # (the TV's certificate is self-signed; it is only reached on the LAN)
+    req = urllib.request.Request(f"https://{tv['ip']}:7345{path}", method='PUT' if body is not None else 'GET',
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={'AUTH': tv['token'], 'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=5, context=_TV_SSL) as r:
+        return json.loads(r.read() or b'{}')
+
+
+def _tv_log(msg):
+    path = os.path.join(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}', 'homebase-tv.log')
+    try:
+        with open(path, 'a') as f:
+            f.write(f'{time.strftime("%Y-%m-%d %H:%M:%S")} {msg}\n')
+    except OSError:
+        pass
+
+
+def _tv_enforce(tv):
+    base = '/menu_native/dynamic/tv_settings/picture/'
+    for item, want in (tv.get('keep') or {}).items():
+        cur = (_tv_request(tv, base + item).get('ITEMS') or [{}])[0]
+        if cur.get('VALUE') == want or 'HASHVAL' not in cur:
+            continue
+        _tv_request(tv, base + item, {'REQUEST': 'MODIFY', 'HASHVAL': cur['HASHVAL'], 'VALUE': want})
+        _tv_log(f'{item}: {cur.get("VALUE")!r} -> {want!r}')
+
+
+def watch_tv():
+    was_on, last = False, 0.0
+    while True:
+        time.sleep(15)
+        tv = load_settings()['tv']
+        if not tv.get('ip') or not tv.get('token') or not tv.get('keep'):
+            continue
+        try:
+            power = _tv_request(tv, '/state/device/power_mode')
+            on = (power.get('ITEMS') or [{}])[0].get('VALUE') == 1
+            if on and (not was_on or time.time() - last >= 60):
+                if not was_on:
+                    _tv_log('TV turned on')
+                    time.sleep(5)   # (let it settle on its input and picture mode)
+                _tv_enforce(tv)
+                last = time.time()
+            was_on = on
+        except (urllib.error.URLError, OSError, ValueError, KeyError):
+            was_on = False   # (off, asleep or unreachable)
+
+
 def cast_status():
     if FAKE:
         return {'ready': True}
@@ -1394,6 +1459,7 @@ def main():
     load_settings()
     if not FAKE:
         threading.Thread(target=watch_keys, name='keys', daemon=True).start()
+        threading.Thread(target=watch_tv, name='tv', daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
     print(f'Home Base backend on http://{HOST}:{PORT}', flush=True)
