@@ -38,6 +38,9 @@ if [ ! -x "$APP/venv/bin/plex-mpv-shim" ]; then
   python3 -m venv "$APP/venv"
   "$APP/venv/bin/pip" install --no-cache-dir --quiet plex-mpv-shim
 fi
+# YouTube: yt-dlp with its challenge solver scripts, and Deno, the JavaScript runtime it needs (Home Base keeps
+# yt-dlp up to date itself)
+"$APP/venv/bin/pip" install --no-cache-dir --quiet -U "yt-dlp[default]" deno
 chown -R "$USER_NAME:$USER_NAME" "$APP"
 
 # Browser policy

@@ -61,6 +61,8 @@ DEFAULTS = {
     # a Vizio SmartCast TV paired over the network: picture settings Home Base keeps in place
     # ({"ip", "token", "keep": {"more_picture/backlight_control": "Off", "backlight": 65}}); the token stays here
     'tv': {'ip': None, 'token': None, 'keep': {}},
+    # YouTube: channels followed here (no Google account) and watch history with resume points
+    'youtube': {'subs': [], 'history': []},
 }
 
 # ---------------------------------------------------------------- settings
@@ -1238,6 +1240,246 @@ def plex_play(body):
     return {'ok': True, 'title': title}
 
 
+# ---------------------------------------------------------------- YouTube
+# Browsing through yt-dlp (search, channels) and YouTube's public channel feeds (the latest uploads of followed
+# channels); playback in mpv with hardware-decoded H.264 from YouTube's own streams - no ads, no Google account.
+# Subscriptions, history and resume points stay in settings.json.
+
+VENV_BIN = os.path.join(ROOT, 'venv', 'bin')
+YT_FORMAT = 'bv*[vcodec^=avc1][height<=1080]+ba[acodec^=mp4a]/b[vcodec^=avc1][height<=1080]/b'
+_yt_cache = {}
+_yt_cache_lock = threading.Lock()
+
+
+def _yt_env():
+    env = dict(os.environ)
+    env['PATH'] = VENV_BIN + os.pathsep + env.get('PATH', '')   # (yt-dlp finds deno, its JavaScript runtime, here)
+    return env
+
+
+def _ytdlp():
+    p = os.path.join(VENV_BIN, 'yt-dlp')
+    return p if os.path.exists(p) else 'yt-dlp'
+
+
+def _yt_cached(key, ttl, fn):
+    with _yt_cache_lock:
+        hit = _yt_cache.get(key)
+        if hit and time.time() - hit[0] < ttl:
+            return hit[1]
+    value = fn()
+    with _yt_cache_lock:
+        _yt_cache[key] = (time.time(), value)
+    return value
+
+
+def _ytdlp_json(args, timeout=40):
+    code, out, err = run([_ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args], timeout=timeout, env=_yt_env())
+    if code != 0:
+        raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
+    return json.loads(out)
+
+
+def _yt_video(e):
+    vid = e.get('id') or ''
+    return {'id': vid, 'title': e.get('title') or '', 'channel': e.get('channel') or e.get('uploader') or '',
+            'channel_id': e.get('channel_id') or '', 'duration': e.get('duration'), 'views': e.get('view_count'),
+            'published': e.get('timestamp') or e.get('release_timestamp'),
+            'live': e.get('live_status') == 'is_live', 'thumb': f'https://i.ytimg.com/vi/{vid}/hqdefault.jpg'}
+
+
+def yt_search(q):
+    query = (q.get('q') or [''])[0].strip()
+    if not query:
+        return []
+    def fetch():
+        d = _ytdlp_json([f'ytsearch40:{query}'])
+        return [_yt_video(e) for e in d.get('entries') or [] if e.get('ie_key') in (None, 'Youtube') and e.get('id')]
+    return _yt_cached(('search', query), 600, fetch)
+
+
+def _yt_avatar(d):
+    for t in reversed(d.get('thumbnails') or []):
+        if t.get('id') in ('avatar_uncropped', 'avatar') or 'avatar' in str(t.get('id')):
+            return t.get('url')
+    return None
+
+
+def yt_channel(q):
+    cid = (q.get('id') or [''])[0]
+    if not cid.startswith('UC') or not cid.replace('-', '').replace('_', '').isalnum():
+        raise ApiError('not a channel id')
+    def fetch():
+        d = _ytdlp_json(['--playlist-items', '1-40', f'https://www.youtube.com/channel/{cid}/videos'])
+        vids = []
+        for e in d.get('entries') or []:
+            v = _yt_video(e)
+            v['channel'] = v['channel'] or d.get('channel') or d.get('uploader') or ''
+            v['channel_id'] = cid
+            vids.append(v)
+        return {'id': cid, 'name': d.get('channel') or d.get('uploader') or d.get('title') or '',
+                'avatar': _yt_avatar(d), 'videos': vids}
+    data = _yt_cached(('channel', cid), 1800, fetch)
+    subs = load_settings()['youtube']['subs']
+    return dict(data, subscribed=any(sub.get('id') == cid for sub in subs))
+
+
+def _yt_feed(cid):
+    """A channel's 15 latest uploads from its public Atom feed (fast; no yt-dlp)."""
+    def fetch():
+        root = ET.fromstring(http_get(f'https://www.youtube.com/feeds/videos.xml?channel_id={cid}', timeout=10))
+        ns = {'a': 'http://www.w3.org/2005/Atom', 'yt': 'http://www.youtube.com/xml/schemas/2015',
+              'media': 'http://search.yahoo.com/mrss/'}
+        out = []
+        for en in root.findall('a:entry', ns):
+            vid = en.findtext('yt:videoId', default='', namespaces=ns)
+            link = en.find('a:link', ns)
+            if link is not None and '/shorts/' in (link.get('href') or ''):
+                continue   # (Shorts are vertical and seconds long: not for the TV feed)
+            try:
+                ts = datetime_ts(en.findtext('a:published', default='', namespaces=ns))
+            except ValueError:
+                ts = None
+            stats = en.find('media:group/media:community/media:statistics', ns)
+            out.append({'id': vid, 'title': en.findtext('a:title', default='', namespaces=ns),
+                        'channel': en.findtext('a:author/a:name', default='', namespaces=ns), 'channel_id': cid,
+                        'duration': None, 'views': int(stats.get('views')) if stats is not None and stats.get('views') else None,
+                        'published': ts, 'live': False, 'thumb': f'https://i.ytimg.com/vi/{vid}/hqdefault.jpg'})
+        return out
+    return _yt_cached(('feed', cid), 1800, fetch)
+
+
+def datetime_ts(text):
+    from datetime import datetime
+    return datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()
+
+
+def yt_home(q):
+    subs = load_settings()['youtube']['subs']
+    from concurrent.futures import ThreadPoolExecutor
+    videos = []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for feed in pool.map(lambda sub: _safe(lambda: _yt_feed(sub['id']), []), subs):
+            videos.extend(feed)
+    videos.sort(key=lambda v: -(v.get('published') or 0))
+    return {'subs': len(subs), 'videos': videos[:80]}
+
+
+def _safe(fn, default):
+    try:
+        return fn()
+    except (ApiError, urllib.error.URLError, OSError, ValueError, ET.ParseError):
+        return default
+
+
+def yt_subs(q):
+    return load_settings()['youtube']['subs']
+
+
+def yt_subscribe(body):
+    cid = str(body.get('id') or '')
+    if not cid.startswith('UC'):
+        raise ApiError('not a channel id')
+    entry = {'id': cid, 'name': str(body.get('name') or '')[:120], 'avatar': body.get('avatar')}
+
+    def upd(st):
+        subs = [x for x in st['youtube']['subs'] if x.get('id') != cid]
+        if body.get('subscribe', True):
+            subs.append(entry)
+        st['youtube']['subs'] = sorted(subs, key=lambda x: x.get('name', '').lower())
+    update_settings(upd)
+    return {'subscribed': bool(body.get('subscribe', True))}
+
+
+def yt_import(body):
+    """Subscriptions from Google Takeout's subscriptions.csv (Channel Id, Channel Url, Channel Title)."""
+    import csv, io
+    rows = list(csv.reader(io.StringIO(str(body.get('csv') or ''))))
+    found = [{'id': r[0].strip(), 'name': r[2].strip() if len(r) > 2 else '', 'avatar': None}
+             for r in rows if r and r[0].strip().startswith('UC')]
+
+    def upd(st):
+        have = {x['id'] for x in st['youtube']['subs']}
+        st['youtube']['subs'] = sorted(st['youtube']['subs'] + [f for f in found if f['id'] not in have],
+                                       key=lambda x: x.get('name', '').lower())
+    update_settings(upd)
+    return {'imported': len(found)}
+
+
+def yt_history(q):
+    return load_settings()['youtube']['history']
+
+
+def _yt_remember(video, position, duration):
+    def upd(st):
+        hist = [h for h in st['youtube']['history'] if h.get('id') != video['id']]
+        hist.insert(0, dict(video, position=position, duration=duration, watched=time.time()))
+        st['youtube']['history'] = hist[:200]
+    update_settings(upd)
+
+
+def _watch_yt(proc, video):
+    """Remember where a YouTube video was left, every 10 s and when it closes."""
+    last = 0.0
+    while proc.poll() is None:
+        time.sleep(1)
+        pos, dur = _mpv_get('time-pos'), _mpv_get('duration')
+        if pos is not None:
+            _player.update(position=float(pos) * 1000, paused=bool(_mpv_get('pause')))
+        if dur:
+            _player['duration'] = float(dur) * 1000
+        if time.time() - last >= 10 and pos is not None:
+            last = time.time()
+            _yt_remember(video, float(pos), float(dur or 0))
+    _yt_remember(video, _player['position'] / 1000, _player['duration'] / 1000)
+    with _player_lock:
+        if _player['proc'] is proc:
+            _player.update(proc=None, title=None, rating_key=None)
+    _push_event('idle')
+
+
+def yt_play(body):
+    vid = str(body.get('id') or '')
+    if not (8 <= len(vid) <= 16) or not vid.replace('-', '').replace('_', '').isalnum():
+        raise ApiError('not a video id')
+    if player_running():
+        raise ApiError('Something is already playing', 409)
+    video = {k: body.get(k) for k in ('id', 'title', 'channel', 'channel_id', 'thumb')}
+    start = 0.0
+    if body.get('resume'):
+        h = next((h for h in load_settings()['youtube']['history'] if h.get('id') == vid), None)
+        if h and h.get('duration') and 30 < h.get('position', 0) < 0.95 * h['duration']:
+            start = float(h['position'])
+    title = str(video.get('title') or 'YouTube')
+    input_conf = os.path.join(CONF_DIR, 'mpv-input.conf')
+    os.makedirs(CONF_DIR, exist_ok=True)
+    with open(input_conf, 'w') as f:
+        f.write(MPV_INPUT)
+    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
+           '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', f'--ytdl-format={YT_FORMAT}',
+           f'--script-opts=ytdl_hook-ytdl_path={_ytdlp()}', '--input-default-bindings=no', f'--input-conf={input_conf}',
+           f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1',
+           f'--start={start:.1f}', f'https://www.youtube.com/watch?v={vid}']
+    if FAKE:
+        return {'ok': True, 'title': title}
+    env = wayland_env()
+    env['PATH'] = VENV_BIN + os.pathsep + env.get('PATH', '')
+    _push_event('busy')
+    with _player_lock:
+        proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _player.update(proc=proc, title=title, rating_key=None, position=start * 1000, paused=False, duration=0)
+    threading.Thread(target=_watch_yt, args=(proc, video), daemon=True).start()
+    return {'ok': True, 'title': title, 'start': start}
+
+
+def _yt_update_tools():
+    """YouTube changes often and yt-dlp follows: update it (and its solver scripts) once a day."""
+    pip = os.path.join(VENV_BIN, 'pip')
+    while os.path.exists(pip):
+        run([pip, 'install', '-q', '-U', 'yt-dlp[default]'], timeout=600, env=_yt_env())
+        time.sleep(24 * 3600)
+
+
 def player_status():
     return {'playing': player_running(), 'title': _player['title'], 'position': _player['position'],
             'duration': _player['duration'], 'paused': _player['paused']}
@@ -1260,6 +1502,11 @@ ROUTES_GET = {
     '/api/volume': lambda q: volume_status(),
     '/api/events': events_since,
     '/api/plex/servers': lambda q: plex_servers(),
+    '/api/yt/search': yt_search,
+    '/api/yt/channel': yt_channel,
+    '/api/yt/home': yt_home,
+    '/api/yt/subs': yt_subs,
+    '/api/yt/history': yt_history,
     '/api/player': lambda q: player_status(),
 }
 
@@ -1305,6 +1552,9 @@ ROUTES_POST = {
     '/api/plex/unlink': plex_unlink,
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
+    '/api/yt/play': yt_play,
+    '/api/yt/subscribe': yt_subscribe,
+    '/api/yt/import': yt_import,
     '/api/player/stop': lambda b: (player_stop(), {'ok': True})[1],
     '/api/country': set_country,
     '/api/setup/done': setup_done,
@@ -1469,6 +1719,7 @@ def main():
     if not FAKE:
         threading.Thread(target=watch_keys, name='keys', daemon=True).start()
         threading.Thread(target=watch_tv, name='tv', daemon=True).start()
+        threading.Thread(target=_yt_update_tools, name='yt-dlp-update', daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
     print(f'Home Base backend on http://{HOST}:{PORT}', flush=True)

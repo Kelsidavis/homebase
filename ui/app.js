@@ -133,6 +133,7 @@ function show(view, opts = {}) {
   if (view === 'settings') renderSettings(opts.tab || state.settingsTab);
   if (view === 'music') music.render();
   if (view === 'plex') plexv.render();
+  if (view === 'youtube') yt.render();
   setTimeout(() => {
     const remembered = state.lastFocus[view];
     if (remembered && remembered.isConnected && !opts.tab) remembered.focus();
@@ -190,6 +191,7 @@ function back() {
   if (state.menuOpen) return closeMenu(true);
   if (state.view === 'music' && music.back()) return;
   if (state.view === 'plex' && plexv.back()) return;
+  if (state.view === 'youtube' && yt.back()) return;
   if (state.view === 'setup') { if (setup.step > 0) setup.go(setup.step - 1); return; }
   if (state.view !== 'home') show('home');
 }
@@ -378,7 +380,7 @@ function closeMenu(refocus) {
 }
 
 const ACTIONS = {
-  youtube: () => { location.href = 'https://www.youtube.com/tv'; },
+  youtube: () => show('youtube'),
   plex: () => show('plex'),
   music: () => show('music'),
   cast: () => openDialog({
@@ -1580,6 +1582,144 @@ const plexv = {
 
 function focusFirstPlex() {
   const el = $('#plex-body .card-item') || $('#plex-body .track') || $('#plex-body button');
+  if (el) el.focus();
+}
+
+/* ==================================================================== youtube */
+
+const yt = {
+  tab: 'home',
+  stack: [],
+  query: '',
+  results: null,
+
+  back() {
+    if (this.stack.length) { this.stack.pop(); this.render(); setTimeout(() => focusIn('#youtube-body'), 80); return true; }
+    return false;
+  },
+  open(entry) { this.stack.push(entry); this.render(); setTimeout(() => focusIn('#youtube-body'), 120); },
+
+  async render() {
+    const body = $('#youtube-body');
+    const top = this.stack[this.stack.length - 1];
+    if (top && top.kind === 'video') return this.renderVideo(body, top.video);
+    if (top && top.kind === 'channel') return this.renderChannel(body, top.id);
+    const tabs = [['home', 'Home'], ['search', 'Search'], ['subs', 'Subscriptions'], ['history', 'History']];
+    const bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
+      class: `pill${this.tab === id ? ' selected' : ''}`, onclick: () => { this.tab = id; this.render(); },
+    }, label)));
+    const content = h('div', { class: 'grid videos' }, h('div', { class: 'empty' }, 'Loading…'));
+    if (this.tab === 'search') {
+      const q = h('input', { class: 'text-input', placeholder: 'Search YouTube', value: this.query, 'data-enter': 'yt-go', style: { flexGrow: 1 } });
+      const go = h('button', { class: 'primary', id: 'yt-go', onclick: async () => {
+        this.query = q.value.trim();
+        if (!this.query) return;
+        content.replaceChildren(h('div', { class: 'empty' }, 'Searching…'));
+        try { this.results = await api(`/api/yt/search?q=${encodeURIComponent(this.query)}`); this.fillVideos(content, this.results); }
+        catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+      } }, 'Search');
+      body.replaceChildren(bar, h('div', { style: { display: 'flex', gap: '16px', marginBottom: '24px' } }, q, go), content);
+      if (this.results) this.fillVideos(content, this.results); else content.replaceChildren();
+      setTimeout(() => (this.results ? null : q.focus()), 60);
+      return;
+    }
+    body.replaceChildren(bar, content);
+    try {
+      if (this.tab === 'home') {
+        const r = await api('/api/yt/home');
+        if (!r.subs) {
+          content.replaceChildren(h('div', { class: 'empty' }, 'Follow some channels and their new videos appear here. Find a video with Search, open it, then its channel, and press Subscribe.'));
+          return;
+        }
+        this.fillVideos(content, r.videos);
+      } else if (this.tab === 'subs') {
+        const subs = await api('/api/yt/subs');
+        if (!subs.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No subscriptions yet.')); return; }
+        content.className = 'grid';
+        content.replaceChildren(...subs.map((c) => {
+          const img = h('div', { class: 'img' });
+          if (c.avatar) img.style.backgroundImage = `url("${c.avatar}")`;
+          return h('button', { class: 'card-item round-img', onclick: () => this.open({ kind: 'channel', id: c.id }) },
+            img, h('div', { class: 't1' }, c.name));
+        }));
+      } else {
+        const hist = await api('/api/yt/history');
+        if (!hist.length) { content.replaceChildren(h('div', { class: 'empty' }, 'Nothing watched yet.')); return; }
+        this.fillVideos(content, hist);
+      }
+    } catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+  },
+
+  fillVideos(content, videos) {
+    content.className = 'grid videos';
+    if (!videos.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No videos.')); return; }
+    content.replaceChildren(...videos.map((v) => {
+      const img = h('div', { class: 'img' });
+      img.style.backgroundImage = `url("${v.thumb}")`;
+      const dur = v.live ? 'LIVE' : v.duration ? fmtTime(v.duration) : '';
+      const prog = v.position && v.duration ? h('div', { class: 'prog' }, h('i', { style: { width: `${Math.min(100, v.position / v.duration * 100)}%` } })) : null;
+      return h('button', { class: 'card-item', onclick: () => this.open({ kind: 'video', video: v }) },
+        h('div', { class: 'poster-wrap' }, img, dur ? h('span', { class: 'dur' }, dur) : null, prog),
+        h('div', { class: 't1' }, v.title), h('div', { class: 't2' }, [v.channel, ytAgo(v.published)].filter(Boolean).join(' · ')));
+    }));
+  },
+
+  async renderVideo(body, v) {
+    const hist = await api('/api/yt/history').catch(() => []);
+    const seen = hist.find((x) => x.id === v.id);
+    const canResume = seen && seen.duration && seen.position > 30 && seen.position < 0.95 * seen.duration;
+    const play = async (resume) => {
+      try { await api('/api/yt/play', { ...v, resume }); toast(`Starting ${v.title}…`); plexv.watchPlayer(); }
+      catch (err) { toast(err.message); }
+    };
+    const thumb = h('div', { class: 'yt-hero' });
+    thumb.style.backgroundImage = `url("${v.thumb.replace('hqdefault', 'maxresdefault')}"), url("${v.thumb}")`;
+    const meta = [v.duration ? fmtTime(v.duration) : null, v.views ? `${Number(v.views).toLocaleString('en-US')} views` : null, ytAgo(v.published)].filter(Boolean).join(' · ');
+    body.replaceChildren(h('div', { class: 'detail' }, thumb,
+      h('div', { class: 'detail-info' },
+        h('div', { class: 'eyebrow' }, v.channel || 'YouTube'),
+        h('h2', { style: { fontSize: '56px' } }, v.title),
+        meta ? h('div', { class: 'detail-meta' }, meta) : null,
+        h('div', { class: 'detail-actions' },
+          canResume ? h('button', { class: 'primary', id: 'yt-resume', onclick: () => play(true) }, `Resume from ${fmtTime(seen.position)}`) : null,
+          h('button', { class: canResume ? 'pill' : 'primary', id: 'yt-play', style: canResume ? { height: '80px' } : null, onclick: () => play(false) }, canResume ? 'Play from start' : 'Play'),
+          v.channel_id ? h('button', { class: 'pill', style: { height: '80px' }, onclick: () => this.open({ kind: 'channel', id: v.channel_id }) }, 'Channel') : null))));
+    setTimeout(() => { const b = $('#yt-resume') || $('#yt-play'); if (b) b.focus(); }, 60);
+  },
+
+  async renderChannel(body, id) {
+    body.replaceChildren(h('div', { class: 'empty' }, 'Loading channel…'));
+    let c;
+    try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
+    const sub = h('button', { class: c.subscribed ? 'pill' : 'primary', style: { height: '72px' }, onclick: async () => {
+      try {
+        await api('/api/yt/subscribe', { id: c.id, name: c.name, avatar: c.avatar, subscribe: !c.subscribed });
+        c.subscribed = !c.subscribed;
+        sub.className = c.subscribed ? 'pill' : 'primary';
+        sub.textContent = c.subscribed ? 'Subscribed ✓' : 'Subscribe';
+        toast(c.subscribed ? `Subscribed to ${c.name}` : `Unsubscribed from ${c.name}`);
+      } catch (err) { toast(err.message); }
+    } }, c.subscribed ? 'Subscribed ✓' : 'Subscribe');
+    const avatar = h('div', { class: 'yt-avatar' });
+    if (c.avatar) avatar.style.backgroundImage = `url("${c.avatar}")`;
+    const grid = h('div', { class: 'grid videos' });
+    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, avatar, h('h2', { style: { fontSize: '44px', fontWeight: 600 } }, c.name), sub), grid);
+    this.fillVideos(grid, c.videos);
+  },
+};
+
+function ytAgo(ts) {
+  if (!ts) return '';
+  const d = (Date.now() / 1000 - ts) / 86400;
+  if (d < 1) return 'today';
+  if (d < 2) return 'yesterday';
+  if (d < 30) return `${Math.floor(d)} days ago`;
+  if (d < 365) return `${Math.floor(d / 30)} months ago`;
+  return `${Math.floor(d / 365)} years ago`;
+}
+
+function focusIn(sel) {
+  const el = $(`${sel} .card-item`) || $(`${sel} .primary`) || $(`${sel} button`);
   if (el) el.focus();
 }
 

@@ -11,7 +11,11 @@ remote with a trackpad, though any USB keyboard and mouse work.
 
 - **Home screen**: clock, weather for your location, and large tiles for
   YouTube, Plex, Music and casting.
-- **YouTube** in its TV ("leanback") interface.
+- **YouTube**, built in: your followed channels' new videos, search, channel
+  pages and history with resume points, played full screen in mpv from
+  YouTube's own H.264 streams with the hardware decoder (up to 1080p). There
+  are no ads and no Google account: subscriptions and history stay on the Pi
+  (via [yt-dlp](https://github.com/yt-dlp/yt-dlp), updated daily).
 - **Plex movies and shows**, built in: Continue Watching, Recently Added and
   each library, with seasons and episodes. Videos play full screen in mpv
   with the Pi's hardware decoder, and progress is reported back to Plex

@@ -502,3 +502,12 @@ body[data-wallpaper="art"] #wallpaper .blob { opacity: 0.25; }
 /* while a video or game has the screen, the home screen draws nothing that moves */
 body.busy #wallpaper { display: none; }
 body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
+
+/* ------------------------------------------------------------ youtube */
+
+.grid.videos { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 36px 28px; }
+.grid.videos .img { aspect-ratio: 16 / 9; border-radius: 16px; }
+.grid.videos .t1 { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; line-height: 1.25; }
+.poster-wrap .dur { position: absolute; right: 10px; bottom: 10px; padding: 4px 10px; border-radius: 8px; background: rgba(0,0,0,0.75); color: #fff; font-size: 20px; }
+.yt-hero { width: 800px; aspect-ratio: 16 / 9; flex-shrink: 0; border-radius: 24px; background: var(--surface-2) center/cover no-repeat; box-shadow: 0 24px 60px rgba(0,0,0,0.45); }
+.yt-avatar { width: 96px; height: 96px; border-radius: 50%; background: var(--surface-2) center/cover no-repeat; flex-shrink: 0; }
