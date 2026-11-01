@@ -13,6 +13,7 @@ import json
 import os
 import pwd
 import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -733,6 +734,85 @@ def power(body):
 # ---------------------------------------------------------------- cast
 
 
+# ---------------------------------------------------------------- remote keys
+# Nothing else in a kiosk session acts on volume keys, so Home Base reads the
+# remote's key presses itself (the homebase user is in the input group) and
+# changes the volume of the default output. Every other key still reaches the
+# browser as usual. Key codes are logged so new remotes are easy to map.
+
+KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+_INPUT_EVENT = struct.Struct('llHHi')
+_volume_state = {'changed': 0.0}
+
+
+def _has_volume_keys(event_name):
+    """True if an input device reports any of the volume keys."""
+    try:
+        with open(f'/sys/class/input/{event_name}/device/capabilities/key') as f:
+            words = f.read().split()
+    except OSError:
+        return False
+    bits = 0
+    for w in words:   # highest word first, each a hex long
+        bits = (bits << (struct.calcsize('l') * 8)) | int(w, 16)
+    return any(bits >> code & 1 for code in (KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP))
+
+
+def _change_volume(code):
+    if code == KEY_MUTE:
+        cmd = ['wpctl', 'set-mute', '@DEFAULT_AUDIO_SINK@', 'toggle']
+    else:
+        step = '5%+' if code == KEY_VOLUMEUP else '5%-'
+        cmd = ['wpctl', 'set-volume', '-l', '1.0', '@DEFAULT_AUDIO_SINK@', step]
+    run(cmd, timeout=5)
+    _volume_state['changed'] = time.time()
+
+
+def volume_status():
+    if FAKE:
+        return {'volume': 0.7, 'muted': False, 'changed': _volume_state['changed']}
+    code, out, _ = run(['wpctl', 'get-volume', '@DEFAULT_AUDIO_SINK@'], timeout=5)
+    parts = out.split()
+    vol = float(parts[1]) if code == 0 and len(parts) > 1 else None
+    return {'volume': vol, 'muted': '[MUTED]' in out, 'changed': _volume_state['changed']}
+
+
+def watch_keys():
+    import select
+    open_devs = {}
+    last_scan = 0.0
+    while True:
+        if time.time() - last_scan > 5:   # pick up remotes plugged in later
+            last_scan = time.time()
+            for path in glob.glob('/dev/input/event*'):
+                name = os.path.basename(path)
+                if name in open_devs.values() or not _has_volume_keys(name):
+                    continue
+                try:
+                    open_devs[os.open(path, os.O_RDONLY | os.O_NONBLOCK)] = name
+                except OSError:
+                    pass
+        if not open_devs:
+            time.sleep(5)
+            continue
+        ready, _, _ = select.select(list(open_devs), [], [], 5)
+        for fd in ready:
+            try:
+                data = os.read(fd, _INPUT_EVENT.size * 64)
+            except OSError:   # unplugged
+                os.close(fd)
+                open_devs.pop(fd, None)
+                continue
+            for i in range(0, len(data) - _INPUT_EVENT.size + 1, _INPUT_EVENT.size):
+                _, _, typ, code, value = _INPUT_EVENT.unpack_from(data, i)
+                if typ != 1 or value == 0:   # key presses (1) and auto-repeats (2) only
+                    continue
+                if value == 1:
+                    print(f'key {code} on {open_devs.get(fd)}', flush=True)
+                if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) or (code == KEY_MUTE and value == 1):
+                    _change_volume(code)
+
+
 def cast_status():
     if FAKE:
         return {'ready': True}
@@ -883,6 +963,7 @@ ROUTES_GET = {
     '/api/plex/status': lambda q: plex_status(),
     '/api/session': lambda q: {'hostname': hostname()},
     '/api/cast': lambda q: cast_status(),
+    '/api/volume': lambda q: volume_status(),
     '/api/plex/servers': lambda q: plex_servers(),
 }
 
@@ -1087,6 +1168,8 @@ def main():
         apply_display_from_settings()
         return
     load_settings()
+    if not FAKE:
+        threading.Thread(target=watch_keys, name='keys', daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
     print(f'Home Base backend on http://{HOST}:{PORT}', flush=True)

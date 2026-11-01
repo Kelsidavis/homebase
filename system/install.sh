@@ -68,6 +68,11 @@ for unit in homebase.service plex-mpv-shim.service; do
   ln -sf "../$unit" "$UNITS/default.target.wants/$unit"
   chown -h "$USER_NAME:$USER_NAME" "$UNITS/default.target.wants/$unit"
 done
+# Sound: prefer the TV's HDMI over the headphone jack
+WP="$USER_HOME/.config/wireplumber/wireplumber.conf.d"
+install -d -o "$USER_NAME" -g "$USER_NAME" "$USER_HOME/.config/wireplumber" "$WP"
+install -m 644 -o "$USER_NAME" -g "$USER_NAME" "$SRC/system/wireplumber-hdmi.conf" "$WP/50-homebase-hdmi.conf"
+
 install -d /var/lib/systemd/linger
 touch "/var/lib/systemd/linger/$USER_NAME"
 

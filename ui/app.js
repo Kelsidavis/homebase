@@ -207,6 +207,10 @@ document.addEventListener('keydown', (e) => {
   if (k === 'MediaPlayPause' || (k === ' ' && !inInput && state.view === 'music')) { e.preventDefault(); return music.toggle(); }
   if (k === 'MediaTrackNext') return music.next();
   if (k === 'MediaTrackPrevious') return music.prev();
+  if (k === 'MediaFastForward') return music.seek(10);
+  if (k === 'MediaRewind') return music.seek(-10);
+  if (k === 'MediaPlay' && music.index >= 0 && audio.paused) return music.toggle();
+  if (k === 'MediaPause' && music.index >= 0 && !audio.paused) return music.toggle();
   if (k === 'MediaStop') return music.stop();
   const dirs = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
   if (dirs[k]) {
@@ -1226,6 +1230,10 @@ const music = {
     if (audio.paused) { this.ensureGraph(); audio.play(); } else audio.pause();
   },
   stop() { audio.pause(); },
+  seek(by) {
+    if (this.index < 0 || !isFinite(audio.duration)) return;
+    audio.currentTime = Math.max(0, Math.min(audio.duration - 0.5, audio.currentTime + by));
+  },
 
   ended() {
     const i = this.pickNext(this.repeat === 'one' ? 0 : 1);
@@ -1412,6 +1420,26 @@ const setup = {
   },
 };
 
+/* ==================================================================== volume */
+
+// The backend changes the volume when a remote's volume keys are pressed; show it briefly.
+let volumeSeen = 0, osdTimer;
+async function pollVolume() {
+  let v;
+  try { v = await api('/api/volume'); } catch { return; }
+  if (!v.changed || v.changed <= volumeSeen) return;
+  const first = volumeSeen === 0;
+  volumeSeen = v.changed;
+  if (first && Date.now() / 1000 - v.changed > 3) return;
+  const osd = $('#volume-osd');
+  const pct = v.volume == null ? 0 : Math.round(v.volume * 100);
+  $('#volume-osd i').style.width = v.muted ? '0%' : `${pct}%`;
+  $('#volume-osd span').textContent = v.muted ? 'Muted' : `${pct}%`;
+  osd.classList.add('show');
+  clearTimeout(osdTimer);
+  osdTimer = setTimeout(() => osd.classList.remove('show'), 1800);
+}
+
 /* ==================================================================== start */
 
 async function start() {
@@ -1441,6 +1469,7 @@ async function start() {
   setInterval(refreshNews, 15 * 60 * 1000);
   setInterval(refreshNetworkChip, 30 * 1000);
   setInterval(refreshCast, 60 * 1000);
+  setInterval(() => { if (!document.hidden) pollVolume(); }, 700);
   viz.frame();
 }
 
