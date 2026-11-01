@@ -1770,24 +1770,40 @@ const yt = {
         h('div', { class: 'detail-actions' },
           canResume ? h('button', { class: 'primary', id: 'yt-resume', onclick: () => play(true) }, `Resume from ${fmtTime(seen.position)}`) : null,
           h('button', { class: canResume ? 'pill' : 'primary', id: 'yt-play', style: canResume ? { height: '80px' } : null, onclick: () => play(false) }, canResume ? 'Play from start' : 'Play'),
-          v.channel_id ? h('button', { class: 'pill', style: { height: '80px' }, onclick: () => this.open({ kind: 'channel', id: v.channel_id }) }, 'Channel') : null))));
+          v.channel_id ? this.channelButton(v.channel_id) : null))));
     setTimeout(() => { const b = $('#yt-resume') || $('#yt-play'); if (b) b.focus(); }, 60);
+    // the channel and a Subscribe button (signed in: the account's subscription)
+    const owner = await api(`/api/yt/owner?id=${encodeURIComponent(v.id)}`).catch(() => null);
+    const actions = body.querySelector('.detail-actions');
+    if (!owner || !owner.channel_id || !actions || !actions.isConnected) return;
+    if (!v.channel_id) { v.channel_id = owner.channel_id; actions.append(this.channelButton(owner.channel_id)); }
+    actions.append(this.subscribeButton({ id: owner.channel_id, name: v.channel, subscribed: owner.subscribed }));
+  },
+
+  channelButton(id) {
+    return h('button', { class: 'pill', style: { height: '80px' }, onclick: () => this.open({ kind: 'channel', id }) }, 'Channel');
+  },
+
+  // c: { id, name, avatar, subscribed }; flips the subscription (the account's when signed in)
+  subscribeButton(c) {
+    const label = () => (c.subscribed ? 'Subscribed ✓' : 'Subscribe');
+    const btn = h('button', { class: c.subscribed ? 'pill' : 'primary', style: { height: '80px' }, onclick: async () => {
+      try {
+        const r = await api('/api/yt/subscribe', { id: c.id, name: c.name, avatar: c.avatar, subscribe: !c.subscribed });
+        c.subscribed = r.subscribed;
+        btn.className = c.subscribed ? 'pill' : 'primary';
+        btn.textContent = label();
+        toast(c.subscribed ? `Subscribed to ${c.name || 'the channel'}` : `Unsubscribed from ${c.name || 'the channel'}`);
+      } catch (err) { toast(err.message); }
+    } }, label());
+    return btn;
   },
 
   async renderChannel(body, id) {
     body.replaceChildren(h('div', { class: 'empty' }, 'Loading channel…'));
     let c;
     try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
-    // (signed in, subscriptions are the account's own, managed on YouTube: no local Subscribe button)
-    const sub = c.account ? null : h('button', { class: c.subscribed ? 'pill' : 'primary', style: { height: '72px' }, onclick: async () => {
-      try {
-        await api('/api/yt/subscribe', { id: c.id, name: c.name, avatar: c.avatar, subscribe: !c.subscribed });
-        c.subscribed = !c.subscribed;
-        sub.className = c.subscribed ? 'pill' : 'primary';
-        sub.textContent = c.subscribed ? 'Subscribed ✓' : 'Subscribe';
-        toast(c.subscribed ? `Subscribed to ${c.name}` : `Unsubscribed from ${c.name}`);
-      } catch (err) { toast(err.message); }
-    } }, c.subscribed ? 'Subscribed ✓' : 'Subscribe');
+    const sub = this.subscribeButton(c);
     const avatar = h('div', { class: 'yt-avatar' });
     if (c.avatar) avatar.style.backgroundImage = `url("${c.avatar}")`;
     const grid = h('div', { class: 'grid videos' });

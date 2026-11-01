@@ -1380,15 +1380,71 @@ def yt_account(q):
     return {'signed_in': yt_signed_in(), 'pending': p['state'] if p else None}
 
 
-def _yt_tv_browse(browse_id):
-    """A page of the account's YouTube TV interface (TVHTML5 Innertube), as JSON."""
+def _yt_tv_post(endpoint, payload):
+    """A call to YouTube's TV interface (TVHTML5 Innertube) as the signed-in account, as JSON."""
     ctx = {'client': {'clientName': 'TVHTML5', 'clientVersion': '7.20250101.00.00', 'hl': 'en',
                       'gl': (load_settings()['country'] or 'US').upper()}}
-    raw = http_get('https://www.youtube.com/youtubei/v1/browse', timeout=20,
-                   data=json.dumps({'context': ctx, 'browseId': browse_id}).encode(),
+    raw = http_get(f'https://www.youtube.com/youtubei/v1/{endpoint}', timeout=20,
+                   data=json.dumps({'context': ctx, **payload}).encode(),
                    headers={'Content-Type': 'application/json', 'Authorization': f'Bearer {_yt_access_token()}',
                             'User-Agent': 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version'})
-    return json.loads(raw)
+    return json.loads(raw or b'{}')
+
+
+def _yt_tv_browse(browse_id):
+    return _yt_tv_post('browse', {'browseId': browse_id})
+
+
+def _yt_find(o, key):
+    """Every value under `key` anywhere in a response."""
+    if isinstance(o, dict):
+        for k, v in o.items():
+            if k == key:
+                yield v
+            yield from _yt_find(v, key)
+    elif isinstance(o, list):
+        for v in o:
+            yield from _yt_find(v, key)
+
+
+def _yt_sub_button(resp, cid=None):
+    for sb in _yt_find(resp, 'subscribeButtonRenderer'):
+        if isinstance(sb, dict) and 'subscribed' in sb and (cid is None or sb.get('channelId') in (None, cid)):
+            return sb
+    return None
+
+
+def _yt_subscribed_ids():
+    return {v['channel_id'] for v in _safe(lambda: _yt_tv_feed('FEsubscriptions', 600), []) if v['channel_id']}
+
+
+def _yt_channel_subscribed(cid):
+    """Whether the account follows a channel: its subscribe button on the TV channel page, else whether the channel
+    is in the subscriptions feed."""
+    def fetch():
+        sb = _safe(lambda: _yt_sub_button(_yt_tv_browse(cid), cid), None)
+        return bool(sb['subscribed']) if sb else cid in _yt_subscribed_ids()
+    return _yt_cached(('subscribed', cid), 300, fetch)
+
+
+def yt_owner(q):
+    """A video's channel and whether the account follows it (for the video page's Subscribe button)."""
+    vid = (q.get('id') or [''])[0]
+    if not _yt_valid_id(vid):
+        raise ApiError('not a video id')
+    if not yt_signed_in():
+        return {'channel_id': None, 'subscribed': None}
+
+    def fetch():
+        sb = _safe(lambda: _yt_sub_button(_yt_tv_post('next', {'videoId': vid})), None)
+        cid = sb.get('channelId') if sb else None
+        if not cid:
+            details = _safe(lambda: _yt_tv_post('player', {'videoId': vid}).get('videoDetails') or {}, {})
+            cid = details.get('channelId')
+        return {'channel_id': cid}
+    owner = dict(_yt_cached(('owner', vid), 3600, fetch))
+    owner['subscribed'] = _yt_channel_subscribed(owner['channel_id']) if owner['channel_id'] else None
+    return owner
 
 
 def _yt_text(o):
@@ -1543,7 +1599,9 @@ def yt_channel(q):
                 'avatar': _yt_avatar(d), 'videos': vids}
     data = _yt_cached(('channel', cid), 1800, fetch)
     subs = load_settings()['youtube']['subs']
-    return dict(data, subscribed=any(sub.get('id') == cid for sub in subs), account=yt_signed_in())
+    if yt_signed_in():
+        return dict(data, subscribed=_yt_channel_subscribed(cid), account=True)
+    return dict(data, subscribed=any(sub.get('id') == cid for sub in subs), account=False)
 
 
 def _yt_feed(cid):
@@ -1662,8 +1720,19 @@ def yt_subs(q):
 
 def yt_subscribe(body):
     cid = str(body.get('id') or '')
-    if not cid.startswith('UC'):
+    if not cid.startswith('UC') or not cid.replace('-', '').replace('_', '').isalnum():
         raise ApiError('not a channel id')
+    if yt_signed_in():   # the account's own subscriptions, as YouTube's apps change them
+        want = bool(body.get('subscribe', True))
+        try:
+            _yt_tv_post('subscription/subscribe' if want else 'subscription/unsubscribe', {'channelIds': [cid]})
+        except urllib.error.HTTPError as e:
+            raise ApiError(f'YouTube did not accept that ({e.code})', 502)
+        with _yt_cache_lock:
+            for k in [k for k in _yt_cache if k in (('subscribed', cid), ('account', 'FEsubscriptions'))]:
+                del _yt_cache[k]
+            _yt_cache[('subscribed', cid)] = (time.time(), want)
+        return {'subscribed': want}
     entry = {'id': cid, 'name': str(body.get('name') or '')[:120], 'avatar': body.get('avatar')}
 
     def upd(st):
@@ -1871,6 +1940,7 @@ ROUTES_GET = {
     '/api/yt/home': yt_home,
     '/api/yt/row': yt_row,
     '/api/yt/account': yt_account,
+    '/api/yt/owner': yt_owner,
     '/api/yt/subs': yt_subs,
     '/api/yt/history': yt_history,
     '/api/player': lambda q: player_status(),
