@@ -74,7 +74,9 @@ def _merge(defaults, data):
     out = {}
     for key, value in defaults.items():
         given = data.get(key)
-        if isinstance(value, dict):
+        if isinstance(value, dict) and not value:   # a free-form mapping (e.g. tv.keep): kept whole
+            out[key] = dict(given) if isinstance(given, dict) else {}
+        elif isinstance(value, dict):
             out[key] = _merge(value, given if isinstance(given, dict) else {})
         else:
             out[key] = given if key in data else value
