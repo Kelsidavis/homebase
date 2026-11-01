@@ -527,5 +527,5 @@ body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
 .yt-qr svg { width: 100%; height: 100%; display: block; }
 .yt-signin p { margin: 6px 0; font-size: 28px; color: var(--muted); }
 .yt-signin .yt-signin-url { font-size: 40px; color: var(--text); font-weight: 600; }
-.yt-signin .yt-signin-code { font-size: 64px; color: var(--text); font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
+.yt-signin .yt-signin-code { white-space: nowrap; font-size: 52px; color: var(--text); font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
 .yt-signin .yt-signin-status { margin-top: 18px; font-size: 26px; }
