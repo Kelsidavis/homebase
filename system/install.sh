@@ -27,6 +27,9 @@ fi
 # Real-time scheduling for PipeWire's audio thread (the pipewire group's limits): without it, sound crackles
 # whenever the CPU is busy.
 getent group pipewire >/dev/null && adduser "$USER_NAME" pipewire >/dev/null
+# 768 MB for decoded video frames and screen buffers (CMA; 512 MB by default), for 4K HEVC. Takes effect after a reboot.
+CMDLINE=/boot/firmware/cmdline.txt
+[ -f "$CMDLINE" ] && ! grep -q ' cma=' "$CMDLINE" && sed -i '1 s/$/ cma=768M/' "$CMDLINE"
 
 # Application files
 install -d -o "$USER_NAME" -g "$USER_NAME" "$APP"
