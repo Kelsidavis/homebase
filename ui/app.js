@@ -1680,7 +1680,14 @@ const yt = {
     let r;
     try { r = await api('/api/yt/signin', {}); } catch (err) { toast(err.message); return; }
     const qr = h('div', { class: 'yt-qr' });
-    if (r.qr) qr.innerHTML = r.qr;   // (an SVG made on this box from the sign-in address)
+    if (r.qr) {   // (an SVG made on this box from the sign-in address; scaled to fit whole, not cropped)
+      qr.innerHTML = r.qr;
+      const svg = qr.querySelector('svg');
+      if (svg && !svg.getAttribute('viewBox')) {
+        svg.setAttribute('viewBox', `0 0 ${parseFloat(svg.getAttribute('width'))} ${parseFloat(svg.getAttribute('height'))}`);
+      }
+      if (svg) { svg.removeAttribute('width'); svg.removeAttribute('height'); }
+    }
     const status = h('p', { class: 'yt-signin-status' }, 'Waiting for you to approve…');
     let polling = true;
     openDialog({
