@@ -495,6 +495,9 @@ def apply_mode(width, height, refresh, scale):
                          env=wayland_env(), timeout=15)
     if code != 0:
         raise ApiError(f'Could not switch mode: {(err or out).strip()}', 500)
+    # a mode change drops the signal for a moment: ask the TV to come back to this input (HDMI-CEC)
+    subprocess.Popen([os.path.join(ROOT, 'bin', 'homebase-cec-active')], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
 
 
 def _revert_display():

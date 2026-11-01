@@ -3,6 +3,8 @@
 # kiosk browser on Home Base home screen.
 echo "$WAYLAND_DISPLAY" > "$XDG_RUNTIME_DIR/homebase-wayland"
 /usr/bin/python3 /opt/homebase/backend/homebase.py apply-display
+# The picture is (re)starting: ask the TV to show this input (HDMI-CEC), in case it left it while the signal was down
+/opt/homebase/bin/homebase-cec-active &
 
 # Wait for the backend (started by systemd) before loading the page.
 i=0

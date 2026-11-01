@@ -1,0 +1,12 @@
+#!/bin/sh
+# Ask the TV to switch to this box's input over HDMI-CEC (Active Source), as streaming sticks do when their picture
+# starts: a TV that fell back to its own home screen when the signal dropped comes back. Does nothing without CEC.
+for dev in /dev/cec0 /dev/cec1; do
+  [ -e "$dev" ] || continue
+  cec-ctl -d "$dev" --playback --osd-name "Home Base" >/dev/null 2>&1 || continue
+  pa=$(cec-ctl -d "$dev" 2>/dev/null | awk '/Physical Address/ {print $NF; exit}')
+  case "$pa" in "" | f.f.f.f) continue ;; esac
+  cec-ctl -d "$dev" --to 0 --image-view-on >/dev/null 2>&1
+  cec-ctl -d "$dev" --to 0 --active-source phys-addr="$pa" >/dev/null 2>&1 && break
+done
+exit 0

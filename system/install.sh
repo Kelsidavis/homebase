@@ -22,7 +22,7 @@ if [ "${SKIP_APT:-0}" != 1 ]; then
   apt-get update
   DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     cage chromium wlr-randr pipewire pipewire-pulse wireplumber curl \
-    mpv libmpv2 python3-venv fonts-dejavu-core fonts-liberation2
+    mpv libmpv2 python3-venv fonts-dejavu-core fonts-liberation2 v4l-utils
 fi
 
 # Application files
