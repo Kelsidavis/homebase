@@ -5,6 +5,7 @@ Cmnd_Alias HOMEBASE = /usr/bin/nmcli *, \
     /usr/bin/systemctl disable --now ssh.socket, \
     /usr/bin/systemctl reboot, /usr/bin/systemctl poweroff, \
     /usr/local/sbin/homebase-setpass, /usr/bin/passwd -S homebase, \
+    /usr/local/sbin/homebase-bootcfg *, \
     /usr/bin/raspi-config nonint do_wifi_country *, /usr/sbin/iw reg set *, \
     /usr/sbin/rfkill unblock wifi, /usr/bin/timedatectl set-timezone *
 homebase ALL=(root) NOPASSWD: HOMEBASE

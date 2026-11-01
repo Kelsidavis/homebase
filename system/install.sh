@@ -38,7 +38,9 @@ if command -v plymouth-set-default-theme >/dev/null 2>&1; then
   printf '[Service]\nExecStart=\nExecStart=-/usr/bin/plymouth quit --retain-splash\n' \
     > /etc/systemd/system/plymouth-quit.service.d/homebase.conf
   CMDLINE=/boot/firmware/cmdline.txt
-  if [ -f "$CMDLINE" ] && ! grep -qw splash "$CMDLINE"; then sed -i '1 s/$/ splash/' "$CMDLINE"; fi
+  if [ -f "$CMDLINE" ] && ! grep -qw splash "$CMDLINE"; then
+    sed -i '1 s/$/ splash plymouth.ignore-serial-consoles/' "$CMDLINE"
+  fi
   update-initramfs -u -k all >/dev/null   # (the splash starts from the initramfs)
 fi
 
@@ -66,6 +68,7 @@ install -m 644 "$SRC/system/chromium-policy.json" /etc/chromium/policies/managed
 
 # Privileges: only the commands the interface needs, no general passwordless sudo
 install -m 755 "$SRC/system/homebase-setpass" /usr/local/sbin/homebase-setpass
+install -m 755 "$SRC/system/homebase-bootcfg" /usr/local/sbin/homebase-bootcfg
 rm -f /etc/sudoers.d/010_pi-nopasswd /etc/sudoers.d/010_homebase-nopasswd
 install -m 440 "$SRC/system/sudoers" /etc/sudoers.d/020_homebase
 visudo -cf /etc/sudoers.d/020_homebase >/dev/null

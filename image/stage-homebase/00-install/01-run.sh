@@ -14,7 +14,9 @@ CHROOT
 CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
 grep -q '^hdmi_enable_4kp60=1' "$CONFIG" || printf '\n[all]\nhdmi_enable_4kp60=1\n' >> "$CONFIG"
 CMDLINE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
-sed -i 's/ console=tty1//; s/$/ quiet loglevel=3 logo.nologo vt.global_cursor_default=0/' "$CMDLINE"
+# (console=tty1 stays: with no console the boot stalled before the root disk was mounted, and on another VT the TV
+# showed that VT rather than Home Base. Raspberry Pi OS keeps it the same way.)
+sed -i 's/$/ quiet loglevel=3 logo.nologo vt.global_cursor_default=0/' "$CMDLINE"
 # The root partition is grown on first boot by homebase-expand.service, not the initramfs (its disk ID change could
 # be lost, leaving the command line pointing at a missing root device): drop the initramfs's resize trigger.
 sed -i 's/ resize\b//' "$CMDLINE"

@@ -1,0 +1,71 @@
+#!/bin/sh
+# Home Base boot settings: a fixed set of switches on the boot command line and firmware config, so the interface
+# (and remote maintenance) can change them without a password. Nothing else in those files can be changed here.
+#
+#   homebase-bootcfg show
+#   homebase-bootcfg quiet on|off       boot text hidden (on) or shown on the TV (off)
+#   homebase-bootcfg splash on|off      the Home Base boot animation (Plymouth)
+#   homebase-bootcfg rainbow on|off     the firmware's rainbow square at power-on
+#   homebase-bootcfg bootdelay on|off   the firmware's one-second pause before starting Linux
+#
+# The previous files are kept as cmdline.txt.homebase-bak and config.txt.homebase-bak.
+set -eu
+BOOT=${HOMEBASE_BOOT_DIR:-/boot/firmware}   # (the override is for tests: sudo resets the environment)
+CMDLINE=$BOOT/cmdline.txt
+CONFIG=$BOOT/config.txt
+QUIET_WORDS="quiet loglevel=3 logo.nologo vt.global_cursor_default=0"
+BEGIN="# >>> Home Base boot settings (homebase-bootcfg)"
+END="# <<< Home Base boot settings"
+
+die() { echo "$*" >&2; exit 2; }
+has_word() { tr ' ' '\n' < "$CMDLINE" | grep -qx "$1"; }
+cmd_set() {   # cmd_set <word> on|off: add or remove one word on the command line (one line)
+  cp "$CMDLINE" "$CMDLINE.homebase-bak"
+  line=$(head -n 1 "$CMDLINE" | tr ' ' '\n' | grep -vx "$1" | grep -v '^$' | tr '\n' ' ')
+  [ "$2" = on ] && line="$line $1"
+  printf '%s\n' "$(echo "$line" | sed 's/  */ /g; s/^ //; s/ $//')" > "$CMDLINE"
+}
+block_get() { sed -n "/^$BEGIN\$/,/^$END\$/p" "$CONFIG" | grep -E "^$1=" | cut -d= -f2; }
+block_set() {   # block_set <key> <value|"">: the Home Base block at the end of config.txt, under [all]
+  cp "$CONFIG" "$CONFIG.homebase-bak"
+  body=$(sed -n "/^$BEGIN\$/,/^$END\$/p" "$CONFIG" | grep -vE "^(#|\[all\])" | grep -vE "^$1=" || true)
+  [ -n "$2" ] && body=$(printf '%s\n%s=%s' "$body" "$1" "$2")
+  sed -i "/^$BEGIN\$/,/^$END\$/d" "$CONFIG"
+  body=$(echo "$body" | grep -v '^$' || true)
+  [ -n "$body" ] && printf '%s\n[all]\n%s\n%s\n' "$BEGIN" "$body" "$END" >> "$CONFIG"
+  return 0
+}
+onoff() { case "${1:-}" in on|off) ;; *) die "use on or off" ;; esac; }
+
+case "${1:-}" in
+  show)
+    q=off; has_word quiet && q=on
+    s=off; has_word splash && s=on
+    r=on; [ "$(block_get disable_splash)" = 1 ] && r=off
+    d=on; [ "$(block_get boot_delay)" = 0 ] && d=off
+    echo "quiet=$q splash=$s rainbow=$r bootdelay=$d"
+    ;;
+  quiet)
+    onoff "${2:-}"
+    # (the console stays on tty1, as in Raspberry Pi OS: with none the boot stalled before the disk was mounted - a Pi
+    # with its serial port off has nothing else - and on another VT the TV showed that VT, not Home Base)
+    for w in $QUIET_WORDS; do cmd_set "$w" "$2"; done
+    cmd_set console=tty3 off
+    tr ' ' '\n' < "$CMDLINE" | grep -qx console=tty1 || cmd_set console=tty1 on
+    ;;
+  splash)
+    onoff "${2:-}"
+    [ "$2" = on ] && ! command -v plymouth >/dev/null 2>&1 && die "the boot animation is not installed"
+    cmd_set splash "$2"
+    cmd_set plymouth.ignore-serial-consoles "$2"   # (it draws on the TV, not on a serial console)
+    ;;
+  rainbow)
+    onoff "${2:-}"
+    if [ "$2" = off ]; then block_set disable_splash 1; else block_set disable_splash ""; fi
+    ;;
+  bootdelay)
+    onoff "${2:-}"
+    if [ "$2" = off ]; then block_set boot_delay 0; else block_set boot_delay ""; fi
+    ;;
+  *) die "usage: homebase-bootcfg show | quiet|splash|rainbow|bootdelay on|off" ;;
+esac
