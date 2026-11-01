@@ -12,7 +12,10 @@ remote with a trackpad, though any USB keyboard and mouse work.
 - **Home screen**: clock, weather for your location, and large tiles for
   YouTube, Plex, Music and casting.
 - **YouTube** in its TV ("leanback") interface.
-- **Plex** web player for movies and shows.
+- **Plex movies and shows**, built in: Continue Watching, Recently Added and
+  each library, with seasons and episodes. Videos play full screen in mpv
+  with the Pi's hardware decoder, and progress is reported back to Plex
+  (resume anywhere; watched past 90%).
 - **Music** from your Plex server: browse albums, artists and playlists, with
   Spectrum, Mirror and Wave visualizers driven by the real audio, and a full
   screen visualizer mode.
@@ -79,8 +82,10 @@ the interface.
 | Arrow keys | Move between items |
 | Enter | Open or choose |
 | Esc, Backspace or Back | Go back |
-| Home (or F1 outside Home Base) | Return to the home screen from anywhere, including YouTube and Plex |
-| Play/Pause, Next, Previous | Control music |
+| Home | Return to the home screen from anywhere: closes a video or game, and leaves YouTube |
+| Volume Up, Down, Mute | System volume, from any screen |
+| Play/Pause, Next, Previous, Fast-forward, Rewind | Control music and videos |
+| While a video plays | OK/Space pause, Left/Right 10 s, Up/Down 1 min, Back/Esc stop, `s` subtitles, `a` audio track |
 
 ## Building the image
 

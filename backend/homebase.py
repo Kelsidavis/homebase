@@ -768,6 +768,9 @@ def events_since(q):
 
 def _home_pressed():
     """Home: close a running game, else bring the home screen back."""
+    if player_running():
+        player_stop()
+        return
     proc = _app_proc['proc'] if '_app_proc' in globals() else None
     if proc is not None and proc.poll() is None:
         try:
@@ -863,8 +866,8 @@ def watch_keys():
                     _log_key(code, open_devs.get(fd))
                 if value == 1 and code == KEY_HOMEPAGE:
                     _home_pressed()
-                elif value == 1 and code in MEDIA_KEYS:
-                    _push_event(MEDIA_KEYS[code])
+                elif value == 1 and code in MEDIA_KEYS and not player_running():
+                    _push_event(MEDIA_KEYS[code])   # (while a video plays, mpv takes them itself)
                 if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) or (code == KEY_MUTE and value == 1):
                     _change_volume(code)
 
@@ -1004,6 +1007,157 @@ def plex_server():
         raise ApiError('Plex is not linked yet', 409)
     return server
 
+# ---------------------------------------------------------------- plex video player
+# Movies and episodes play full screen in mpv (hardware video decoding) on top of the
+# home screen. Progress goes back to the Plex server, so Continue Watching and resume
+# work on every device.
+
+MPV_INPUT = '''# Home Base remote keys for mpv
+ESC quit
+BS quit
+q quit
+ENTER cycle pause
+KP_ENTER cycle pause
+SPACE cycle pause
+PLAYPAUSE cycle pause
+PLAY set pause no
+PAUSE set pause yes
+STOP quit
+LEFT seek -10
+RIGHT seek 10
+UP seek 60
+DOWN seek -60
+REWIND seek -10
+FORWARD seek 10
+PREV seek -60
+NEXT seek 60
+s cycle sub
+a cycle audio
+i script-binding stats/display-stats
+'''
+
+_player = {'proc': None, 'title': None, 'rating_key': None, 'duration': 0, 'position': 0, 'paused': False}
+_player_lock = threading.Lock()
+
+
+def player_running():
+    p = _player['proc']
+    return p is not None and p.poll() is None
+
+
+def player_stop():
+    p = _player['proc']
+    if p is not None and p.poll() is None:
+        p.terminate()
+
+
+def _mpv_socket():
+    return os.path.join(wayland_env()['XDG_RUNTIME_DIR'], 'homebase-mpv.sock')
+
+
+def _mpv_get(prop):
+    """Read a property from the running mpv over its JSON IPC socket."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+            c.settimeout(1)
+            c.connect(_mpv_socket())
+            c.sendall(json.dumps({'command': ['get_property', prop]}).encode() + b'\n')
+            buf = b''
+            while b'\n' not in buf:
+                chunk = c.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        reply = json.loads(buf.split(b'\n')[0] or b'{}')
+        return reply.get('data') if reply.get('error') == 'success' else None
+    except (OSError, ValueError):
+        return None
+
+
+def _plex_timeline(server, rating_key, state, position_ms, duration_ms):
+    q = urllib.parse.urlencode({'ratingKey': rating_key, 'key': f'/library/metadata/{rating_key}', 'state': state,
+                                'time': int(position_ms), 'duration': int(duration_ms)})
+    try:
+        http_get(f"{server['uri'].rstrip('/')}/:/timeline?{q}", plex_headers(server['token']), timeout=5)
+    except (urllib.error.URLError, OSError):
+        pass
+
+
+def _watch_player(proc, server, rating_key, duration_ms):
+    """Report progress to Plex every 10 s while mpv plays, then stopped (and watched past 90%)."""
+    last_report = 0.0
+    while proc.poll() is None:
+        time.sleep(1)
+        pos = _mpv_get('time-pos')
+        paused = bool(_mpv_get('pause'))
+        if pos is not None:
+            _player.update(position=float(pos) * 1000, paused=paused)
+        dur = _mpv_get('duration')
+        if dur:
+            duration_ms = float(dur) * 1000
+            _player['duration'] = duration_ms
+        if time.time() - last_report >= 10:
+            last_report = time.time()
+            _plex_timeline(server, rating_key, 'paused' if paused else 'playing', _player['position'], duration_ms)
+    _plex_timeline(server, rating_key, 'stopped', _player['position'], duration_ms)
+    if duration_ms and _player['position'] >= 0.9 * duration_ms:
+        q = urllib.parse.urlencode({'key': rating_key, 'identifier': 'com.plexapp.plugins.library'})
+        try:
+            http_get(f"{server['uri'].rstrip('/')}/:/scrobble?{q}", plex_headers(server['token']), timeout=5)
+        except (urllib.error.URLError, OSError):
+            pass
+    with _player_lock:
+        if _player['proc'] is proc:
+            _player.update(proc=None, title=None, rating_key=None)
+
+
+def plex_play(body):
+    """Play a movie or episode by its ratingKey, from the start or where it was left."""
+    rating_key = str(body.get('key') or '')
+    if not rating_key.isdigit():
+        raise ApiError('key must be a Plex ratingKey')
+    if player_running():
+        raise ApiError('Something is already playing', 409)
+    server = plex_server()
+    meta = http_json(f"{server['uri'].rstrip('/')}/library/metadata/{rating_key}", plex_headers(server['token']))
+    items = (meta.get('MediaContainer') or {}).get('Metadata') or []
+    if not items:
+        raise ApiError('Not found on the Plex server', 404)
+    item = items[0]
+    try:
+        part = item['Media'][0]['Part'][0]
+    except (KeyError, IndexError):
+        raise ApiError('This item has no playable file')
+    offset = int(item.get('viewOffset') or 0) if body.get('resume') else 0
+    title = item.get('title') or ''
+    if item.get('type') == 'episode':
+        title = f"{item.get('grandparentTitle', '')} · S{item.get('parentIndex', '?')}E{item.get('index', '?')} · {title}"
+    url = server['uri'].rstrip('/') + part['key']
+    env = wayland_env()
+    input_conf = os.path.join(CONF_DIR, 'mpv-input.conf')
+    os.makedirs(CONF_DIR, exist_ok=True)
+    with open(input_conf, 'w') as f:
+        f.write(MPV_INPUT)
+    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
+           '--hwdec=auto-safe', '--input-default-bindings=no', f'--input-conf={input_conf}',
+           f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
+           f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1',
+           f'--start={offset / 1000:.1f}', url]
+    if FAKE:
+        return {'ok': True, 'title': title}
+    with _player_lock:
+        proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        _player.update(proc=proc, title=title, rating_key=rating_key, position=offset, paused=False,
+                       duration=float(item.get('duration') or 0))
+    threading.Thread(target=_watch_player, args=(proc, server, rating_key, float(item.get('duration') or 0)),
+                     daemon=True).start()
+    return {'ok': True, 'title': title}
+
+
+def player_status():
+    return {'playing': player_running(), 'title': _player['title'], 'position': _player['position'],
+            'duration': _player['duration'], 'paused': _player['paused']}
+
 # ---------------------------------------------------------------- http
 
 
@@ -1022,6 +1176,7 @@ ROUTES_GET = {
     '/api/volume': lambda q: volume_status(),
     '/api/events': events_since,
     '/api/plex/servers': lambda q: plex_servers(),
+    '/api/player': lambda q: player_status(),
 }
 
 
@@ -1065,6 +1220,8 @@ ROUTES_POST = {
     '/api/plex/link': plex_link_start,
     '/api/plex/unlink': plex_unlink,
     '/api/plex/server': plex_select_server,
+    '/api/plex/play': plex_play,
+    '/api/player/stop': lambda b: (player_stop(), {'ok': True})[1],
     '/api/country': set_country,
     '/api/setup/done': setup_done,
 }

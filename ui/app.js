@@ -132,6 +132,7 @@ function show(view, opts = {}) {
   $$('.view').forEach((v) => v.classList.toggle('active', v.id === `view-${view}`));
   if (view === 'settings') renderSettings(opts.tab || state.settingsTab);
   if (view === 'music') music.render();
+  if (view === 'plex') plexv.render();
   setTimeout(() => {
     const remembered = state.lastFocus[view];
     if (remembered && remembered.isConnected && !opts.tab) remembered.focus();
@@ -188,6 +189,7 @@ function back() {
   if (state.dialogOpen) return closeDialog();
   if (state.menuOpen) return closeMenu(true);
   if (state.view === 'music' && music.back()) return;
+  if (state.view === 'plex' && plexv.back()) return;
   if (state.view === 'setup') { if (setup.step > 0) setup.go(setup.step - 1); return; }
   if (state.view !== 'home') show('home');
 }
@@ -377,7 +379,7 @@ function closeMenu(refocus) {
 
 const ACTIONS = {
   youtube: () => { location.href = 'https://www.youtube.com/tv'; },
-  plex: () => { location.href = 'https://app.plex.tv/desktop'; },
+  plex: () => show('plex'),
   music: () => show('music'),
   cast: () => openDialog({
     title: 'Cast to TV',
@@ -1415,6 +1417,166 @@ const setup = {
   },
 };
 
+/* ==================================================================== plex video */
+
+const plexv = {
+  tab: 'continue',
+  stack: [],
+  sections: null,
+  playing: false,
+
+  async render() {
+    const body = $('#plex-body');
+    if (!music.status) {
+      body.replaceChildren(h('div', { class: 'empty' }, 'Connecting to Plex…'));
+      try { music.status = await api('/api/plex/status'); } catch (err) { music.status = { linked: false }; }
+    }
+    if (!music.status.linked) {
+      $('#plex-server').hidden = true;
+      body.replaceChildren(h('div', { class: 'card', style: { maxWidth: '1000px' } },
+        h('h2', null, 'Link your Plex account'),
+        h('p', { style: { fontSize: '30px', lineHeight: 1.45 } }, 'Movies and shows come from your Plex server. Link this box to your Plex account once, with a code.'),
+        h('div', null, h('button', { class: 'primary', onclick: () => music.link(() => { this.sections = null; this.render(); }) }, 'Link Plex account'))));
+      return;
+    }
+    $('#plex-server').hidden = !music.status.server;
+    $('#plex-server-name').textContent = music.status.server || '';
+    const top = this.stack[this.stack.length - 1];
+    if (top && top.kind === 'item') return this.renderItem(body, top);
+    await this.renderBrowse(body, top);
+  },
+
+  back() {
+    if (this.stack.length) { this.stack.pop(); this.render(); setTimeout(focusFirstPlex, 80); return true; }
+    return false;
+  },
+
+  open(entry) { this.stack.push(entry); this.render(); setTimeout(focusFirstPlex, 120); },
+
+  async videoSections() {
+    if (!this.sections) {
+      const mc = await music.plex('/library/sections');
+      this.sections = (mc.Directory || []).filter((d) => d.type === 'movie' || d.type === 'show');
+    }
+    return this.sections;
+  },
+
+  poster(it) {
+    if (it.type === 'episode') return it.grandparentThumb || it.parentThumb || it.thumb;
+    if (it.type === 'season') return it.thumb || it.parentThumb;
+    return it.thumb;
+  },
+
+  async renderBrowse(body, top) {
+    const content = h('div', { class: 'grid posters' }, h('div', { class: 'empty' }, 'Loading…'));
+    let bar;
+    if (top) {
+      bar = h('div', { class: 'lib-tabs' },
+        h('button', { class: 'pill', onclick: () => this.back() }, h('span', { html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>' }), 'Back'),
+        h('span', { class: 'crumb' }, top.title));
+    } else {
+      let sections = [];
+      try { sections = await this.videoSections(); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
+      const tabs = [['continue', 'Continue watching'], ['recent', 'Recently added'], ...sections.map((s) => [s.key, s.title])];
+      bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
+        class: `pill${this.tab === id ? ' selected' : ''}`, onclick: () => { this.tab = id; this.render(); },
+      }, label)));
+    }
+    body.replaceChildren(bar, content);
+    try {
+      let items;
+      if (top && top.kind === 'show') items = (await music.plex(`/library/metadata/${top.key}/children`)).Metadata;
+      else if (top && top.kind === 'season') return this.renderEpisodes(content, top);
+      else if (this.tab === 'continue') items = (await music.plex('/library/onDeck?X-Plex-Container-Start=0&X-Plex-Container-Size=40')).Metadata;
+      else if (this.tab === 'recent') {
+        items = (await music.plex('/library/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=60')).Metadata || [];
+        items = items.filter((i) => ['movie', 'show', 'season', 'episode'].includes(i.type));
+      } else items = (await music.plex(`/library/sections/${this.tab}/all?sort=titleSort&X-Plex-Container-Start=0&X-Plex-Container-Size=600`)).Metadata;
+      this.fillGrid(content, items || []);
+    } catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+  },
+
+  fillGrid(content, items) {
+    if (!items.length) { content.replaceChildren(h('div', { class: 'empty' }, this.tab === 'continue' ? 'Nothing in progress.' : 'Nothing here yet.')); return; }
+    content.replaceChildren(...items.map((it) => {
+      const img = h('div', { class: 'img' });
+      const src = music.thumb(this.poster(it), 360);
+      if (src) img.style.backgroundImage = `url("${src}")`;
+      let sub = it.year ? String(it.year) : '';
+      if (it.type === 'episode') sub = `S${it.parentIndex}·E${it.index} · ${it.title}`;
+      if (it.type === 'season') sub = it.parentTitle || '';
+      if (it.type === 'show') sub = `${it.childCount || ''} season${it.childCount === 1 ? '' : 's'}`;
+      const name = it.type === 'episode' ? it.grandparentTitle : it.title;
+      const prog = it.viewOffset && it.duration ? h('div', { class: 'prog' }, h('i', { style: { width: `${Math.min(100, it.viewOffset / it.duration * 100)}%` } })) : null;
+      const watched = !it.viewOffset && it.viewCount && (it.type === 'movie' || it.type === 'episode');
+      return h('button', {
+        class: 'card-item', onclick: () => {
+          if (it.type === 'show') this.open({ kind: 'show', key: it.ratingKey, title: it.title });
+          else if (it.type === 'season') this.open({ kind: 'season', key: it.ratingKey, title: `${it.parentTitle || ''} · ${it.title}` });
+          else this.open({ kind: 'item', key: it.ratingKey, title: name });
+        },
+      }, h('div', { class: 'poster-wrap' }, img, prog, watched ? h('span', { class: 'seen', html: ICON.check }) : null),
+      h('div', { class: 't1' }, name), sub ? h('div', { class: 't2' }, sub) : null);
+    }));
+  },
+
+  async renderEpisodes(content, top) {
+    const eps = (await music.plex(`/library/metadata/${top.key}/children`)).Metadata || [];
+    const list = h('div', { class: 'tracks' }, eps.map((ep) => h('button', {
+      class: 'track', onclick: () => this.open({ kind: 'item', key: ep.ratingKey, title: ep.title }),
+    }, h('span', { class: 'n' }, ep.index), h('span', null, ep.title,
+      h('span', { class: 's' }, [ep.viewOffset ? 'In progress' : ep.viewCount ? 'Watched' : '', (ep.summary || '').slice(0, 110)].filter(Boolean).join(' · '))),
+    h('span', { class: 'd' }, fmtTime((ep.duration || 0) / 1000)))));
+    content.replaceWith(list);
+  },
+
+  async renderItem(body, top) {
+    body.replaceChildren(h('div', { class: 'empty' }, 'Loading…'));
+    let it;
+    try { it = ((await music.plex(`/library/metadata/${top.key}`)).Metadata || [])[0]; } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
+    if (!it) { body.replaceChildren(h('div', { class: 'empty' }, 'Not found.')); return; }
+    const poster = h('div', { class: 'detail-poster' });
+    const src = music.thumb(this.poster(it), 600);
+    if (src) poster.style.backgroundImage = `url("${src}")`;
+    const art = it.art || it.grandparentArt;
+    const wp = $('#wallpaper .art');
+    if (art && state.settings.wallpaper === 'art') { wp.style.backgroundImage = `url("${music.thumb(art, 1280)}")`; wp.classList.add('on'); }
+    const mins = it.duration ? Math.round(it.duration / 60000) : 0;
+    const meta = [it.type === 'episode' ? `S${it.parentIndex}·E${it.index}` : null, it.year, mins ? `${Math.floor(mins / 60) ? `${Math.floor(mins / 60)} h ` : ''}${mins % 60} min` : null,
+      it.contentRating, it.Media && it.Media[0] && it.Media[0].videoResolution ? `${String(it.Media[0].videoResolution).toUpperCase()}` : null].filter(Boolean).join(' · ');
+    const play = async (resume) => {
+      try { await api('/api/plex/play', { key: it.ratingKey, resume }); toast(`Starting ${it.title}…`); this.watchPlayer(); } catch (err) { toast(err.message); }
+    };
+    const actions = h('div', { class: 'detail-actions' },
+      it.viewOffset ? h('button', { class: 'primary', id: 'plex-resume', onclick: () => play(true) }, `Resume from ${fmtTime(it.viewOffset / 1000)}`) : null,
+      h('button', { class: it.viewOffset ? 'pill' : 'primary', id: 'plex-play', style: it.viewOffset ? { height: '80px' } : null, onclick: () => play(false) }, it.viewOffset ? 'Play from start' : 'Play'));
+    body.replaceChildren(h('div', { class: 'detail' }, poster,
+      h('div', { class: 'detail-info' },
+        it.type === 'episode' ? h('div', { class: 'eyebrow' }, it.grandparentTitle) : null,
+        h('h2', null, it.title),
+        meta ? h('div', { class: 'detail-meta' }, meta) : null,
+        it.tagline ? h('p', { class: 'detail-tagline' }, it.tagline) : null,
+        h('p', { class: 'detail-summary' }, it.summary || ''),
+        actions)));
+    setTimeout(() => { const b = $('#plex-resume') || $('#plex-play'); if (b) b.focus(); }, 60);
+  },
+
+  // Refresh the details (resume point, watched) once the player closes.
+  watchPlayer() {
+    clearInterval(this.playerTimer);
+    this.playerTimer = setInterval(async () => {
+      let p;
+      try { p = await api('/api/player'); } catch { return; }
+      if (!p.playing) { clearInterval(this.playerTimer); if (state.view === 'plex') this.render(); }
+    }, 2000);
+  },
+};
+
+function focusFirstPlex() {
+  const el = $('#plex-body .card-item') || $('#plex-body .track') || $('#plex-body button');
+  if (el) el.focus();
+}
+
 /* ==================================================================== volume */
 
 // The backend changes the volume when a remote's volume keys are pressed; show it briefly.
@@ -1478,6 +1640,7 @@ async function start() {
   api('/api/plex/status').then((p) => {
     if (p.server) {
       $('#tile-plex-sub').textContent = `Movies and shows on ${p.server}`;
+      music.status = p;
       if (!music.isPlaying()) $('#tile-music-sub').textContent = `Your music on ${p.server}, with visualizers`;
     }
   }).catch(() => {});
