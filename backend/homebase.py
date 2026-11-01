@@ -777,6 +777,22 @@ def volume_status():
     return {'volume': vol, 'muted': '[MUTED]' in out, 'changed': _volume_state['changed']}
 
 
+def _log_key(code, device):
+    """Recent key presses, for mapping a new remote: $XDG_RUNTIME_DIR/homebase-keys.log (last 200)."""
+    path = os.path.join(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}', 'homebase-keys.log')
+    try:
+        with open(path) as f:
+            lines = f.read().splitlines()[-199:]
+    except OSError:
+        lines = []
+    lines.append(f'{time.strftime("%H:%M:%S")} key {code} on {device}')
+    try:
+        with open(path, 'w') as f:
+            f.write('\n'.join(lines) + '\n')
+    except OSError:
+        pass
+
+
 def watch_keys():
     import select
     open_devs = {}
@@ -808,7 +824,7 @@ def watch_keys():
                 if typ != 1 or value == 0:   # key presses (1) and auto-repeats (2) only
                     continue
                 if value == 1:
-                    print(f'key {code} on {open_devs.get(fd)}', flush=True)
+                    _log_key(code, open_devs.get(fd))
                 if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) or (code == KEY_MUTE and value == 1):
                     _change_volume(code)
 
