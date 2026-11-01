@@ -931,6 +931,10 @@ def _change_volume(code):
         cmd = ['wpctl', 'set-volume', '-l', '1.0', '@DEFAULT_AUDIO_SINK@', step]
     run(cmd, timeout=5)
     _volume_state['changed'] = time.time()
+    if player_running():   # (Home Base's own volume display is behind the video: mpv shows the level instead)
+        v = volume_status()
+        if v['volume'] is not None:
+            _mpv_command('show-text', 'Muted' if v['muted'] else f"Volume {round(v['volume'] * 100)}%", 1500)
 
 
 def volume_status():
@@ -1200,7 +1204,7 @@ def plex_server():
 # home screen. Progress goes back to the Plex server, so Continue Watching and resume
 # work on every device.
 
-MPV_INPUT = '''# Home Base remote keys for mpv
+MPV_INPUT = '''# Home Base remote keys for mpv (a remote's play/pause key reaches mpv as PLAY: every play key toggles)
 ESC quit
 BS quit
 q quit
@@ -1208,8 +1212,8 @@ ENTER cycle pause
 KP_ENTER cycle pause
 SPACE cycle pause
 PLAYPAUSE cycle pause
-PLAY set pause no
-PAUSE set pause yes
+PLAY cycle pause
+PAUSE cycle pause
 STOP quit
 LEFT seek -10
 RIGHT seek 10
@@ -1217,8 +1221,8 @@ UP seek 60
 DOWN seek -60
 REWIND seek -10
 FORWARD seek 10
-PREV seek -60
-NEXT seek 60
+PREV seek -30
+NEXT seek 30
 s cycle sub
 a cycle audio
 i script-binding stats/display-stats
@@ -1233,6 +1237,38 @@ def player_running():
     return p is not None and p.poll() is None
 
 
+# One thing on the TV at a time. Starting a video or a game first claims the TV, for the whole start (looking up a
+# YouTube stream takes seconds): a second start meanwhile - a held OK button repeats its press - is refused rather
+# than opening a second player over the first (five mpv on one hardware decoder wedged it).
+_tv_claim = {'what': None}
+_tv_claim_lock = threading.Lock()
+TV_USERS = [lambda: _player['title'] or 'a video' if player_running() else None]   # (more register below)
+
+
+def tv_in_use():
+    for user in TV_USERS:
+        what = user()
+        if what:
+            return what
+    return _tv_claim['what']
+
+
+class claim_tv:
+    def __init__(self, what):
+        self.what = what
+
+    def __enter__(self):
+        with _tv_claim_lock:
+            if tv_in_use():
+                raise ApiError('Something is already playing', 409)
+            _tv_claim['what'] = self.what
+
+    def __exit__(self, *exc):
+        with _tv_claim_lock:
+            _tv_claim['what'] = None
+        return False
+
+
 def player_stop():
     p = _player['proc']
     if p is not None and p.poll() is None:
@@ -1241,6 +1277,17 @@ def player_stop():
 
 def _mpv_socket():
     return os.path.join(wayland_env()['XDG_RUNTIME_DIR'], 'homebase-mpv.sock')
+
+
+def _mpv_command(*args):
+    """Send a command to the running mpv (no reply awaited)."""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as c:
+            c.settimeout(1)
+            c.connect(_mpv_socket())
+            c.sendall(json.dumps({'command': list(args)}).encode() + b'\n')
+    except OSError:
+        pass
 
 
 def _mpv_get(prop):
@@ -1302,6 +1349,11 @@ def _watch_player(proc, server, rating_key, duration_ms):
 
 def plex_play(body):
     """Play a movie or episode by its ratingKey, from the start or where it was left."""
+    with claim_tv('Plex'):
+        return _plex_play(body)
+
+
+def _plex_play(body):
     rating_key = str(body.get('key') or '')
     if not rating_key.isdigit():
         raise ApiError('key must be a Plex ratingKey')
@@ -1970,6 +2022,11 @@ def yt_prepare(body):
 
 
 def yt_play(body):
+    with claim_tv('YouTube'):
+        return _yt_play(body)
+
+
+def _yt_play(body):
     vid = str(body.get('id') or '')
     if not _yt_valid_id(vid):
         raise ApiError('not a video id')

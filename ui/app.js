@@ -204,6 +204,11 @@ function goHome() {
   show('home');
 }
 
+// A held OK (or Space) repeats its press: only the first counts, so one press starts one thing
+document.addEventListener('keydown', (e) => {
+  if (e.repeat && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); e.stopImmediatePropagation(); }
+}, true);
+
 document.addEventListener('keydown', (e) => {
   const inInput = e.target instanceof HTMLInputElement;
   const k = e.key;
