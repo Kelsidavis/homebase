@@ -740,9 +740,45 @@ def power(body):
 # changes the volume of the default output. Every other key still reaches the
 # browser as usual. Key codes are logged so new remotes are easy to map.
 
-KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP = 113, 114, 115
+KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_HOMEPAGE = 113, 114, 115, 172
+MEDIA_KEYS = {164: 'playpause', 163: 'next', 165: 'previous', 208: 'forward', 168: 'rewind', 166: 'stop',
+              200: 'play', 201: 'pause'}
+# Letters, digits, punctuation, space and the keypad are never logged: only keys like media, volume,
+# Home, Escape and arrows, which is all that mapping a remote needs.
+TYPING_KEYS = set(range(2, 14)) | set(range(16, 28)) | set(range(30, 42)) | set(range(43, 54)) | {57} | set(range(71, 84))
 _INPUT_EVENT = struct.Struct('llHHi')
 _volume_state = {'changed': 0.0}
+# Remote events for the Home Base page, which polls /api/events while it is on screen.
+_events = {'seq': 0, 'items': [], 'page_seen': 0.0}
+_events_lock = threading.Lock()
+
+
+def _push_event(name):
+    with _events_lock:
+        _events['seq'] += 1
+        _events['items'] = (_events['items'] + [{'seq': _events['seq'], 'name': name}])[-20:]
+
+
+def events_since(q):
+    since = int((q.get('since') or ['0'])[0] or 0)
+    with _events_lock:
+        _events['page_seen'] = time.time()
+        return {'seq': _events['seq'], 'events': [e for e in _events['items'] if e['seq'] > since]}
+
+
+def _home_pressed():
+    """Home: close a running game, else bring the home screen back."""
+    proc = _app_proc['proc'] if '_app_proc' in globals() else None
+    if proc is not None and proc.poll() is None:
+        try:
+            os.killpg(proc.pid, 15)
+        except OSError:
+            pass
+        return
+    if time.time() - _events['page_seen'] < 2:
+        _push_event('home')          # Home Base is on screen: it goes to its home view
+    else:
+        run(['pkill', '-x', 'chromium'], timeout=5)   # another site: the kiosk restarts on the home screen
 
 
 def _has_volume_keys(event_name):
@@ -755,7 +791,7 @@ def _has_volume_keys(event_name):
     bits = 0
     for w in words:   # highest word first, each a hex long
         bits = (bits << (struct.calcsize('l') * 8)) | int(w, 16)
-    return any(bits >> code & 1 for code in (KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP))
+    return any(bits >> code & 1 for code in (KEY_MUTE, KEY_VOLUMEDOWN, KEY_VOLUMEUP, KEY_HOMEPAGE, *MEDIA_KEYS))
 
 
 def _change_volume(code):
@@ -778,7 +814,7 @@ def volume_status():
 
 
 def _log_key(code, device):
-    """Recent key presses, for mapping a new remote: $XDG_RUNTIME_DIR/homebase-keys.log (last 200)."""
+    """Recent non-typing key presses, for mapping a new remote: $XDG_RUNTIME_DIR/homebase-keys.log (last 200)."""
     path = os.path.join(os.environ.get('XDG_RUNTIME_DIR') or f'/run/user/{os.getuid()}', 'homebase-keys.log')
     try:
         with open(path) as f:
@@ -823,8 +859,12 @@ def watch_keys():
                 _, _, typ, code, value = _INPUT_EVENT.unpack_from(data, i)
                 if typ != 1 or value == 0:   # key presses (1) and auto-repeats (2) only
                     continue
-                if value == 1:
+                if value == 1 and code not in TYPING_KEYS:
                     _log_key(code, open_devs.get(fd))
+                if value == 1 and code == KEY_HOMEPAGE:
+                    _home_pressed()
+                elif value == 1 and code in MEDIA_KEYS:
+                    _push_event(MEDIA_KEYS[code])
                 if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) or (code == KEY_MUTE and value == 1):
                     _change_volume(code)
 
@@ -980,6 +1020,7 @@ ROUTES_GET = {
     '/api/session': lambda q: {'hostname': hostname()},
     '/api/cast': lambda q: cast_status(),
     '/api/volume': lambda q: volume_status(),
+    '/api/events': events_since,
     '/api/plex/servers': lambda q: plex_servers(),
 }
 

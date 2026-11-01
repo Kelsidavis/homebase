@@ -204,13 +204,8 @@ document.addEventListener('keydown', (e) => {
   const k = e.key;
   if (k === 'BrowserHome' || k === 'GoHome' || (k === 'Home' && !inInput)) { e.preventDefault(); return goHome(); }
   if (k === 'Escape' || k === 'BrowserBack' || k === 'GoBack' || (k === 'Backspace' && !inInput)) { e.preventDefault(); return back(); }
-  if (k === 'MediaPlayPause' || (k === ' ' && !inInput && state.view === 'music')) { e.preventDefault(); return music.toggle(); }
-  if (k === 'MediaTrackNext') return music.next();
-  if (k === 'MediaTrackPrevious') return music.prev();
-  if (k === 'MediaFastForward') return music.seek(10);
-  if (k === 'MediaRewind') return music.seek(-10);
-  if (k === 'MediaPlay' && music.index >= 0 && audio.paused) return music.toggle();
-  if (k === 'MediaPause' && music.index >= 0 && !audio.paused) return music.toggle();
+  // (media keys arrive from the remote through the backend: see pollEvents)
+  if (k === ' ' && !inInput && state.view === 'music') { e.preventDefault(); return music.toggle(); }
   if (k === 'MediaStop') return music.stop();
   const dirs = { ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right' };
   if (dirs[k]) {
@@ -1440,6 +1435,27 @@ async function pollVolume() {
   osdTimer = setTimeout(() => osd.classList.remove('show'), 1800);
 }
 
+// Home and media keys from the remote, read by the backend (the browser keeps them to itself).
+let eventSeq = null;
+const REMOTE = {
+  home: () => goHome(),
+  playpause: () => music.toggle(),
+  play: () => { if (music.index >= 0 && audio.paused) music.toggle(); },
+  pause: () => { if (music.index >= 0 && !audio.paused) music.toggle(); },
+  stop: () => music.stop(),
+  next: () => music.next(),
+  previous: () => music.prev(),
+  forward: () => music.seek(10),
+  rewind: () => music.seek(-10),
+};
+async function pollEvents() {
+  let r;
+  try { r = await api(`/api/events?since=${eventSeq ?? 0}`); } catch { return; }
+  if (eventSeq === null) { eventSeq = r.seq; return; }   // (presses from before this page loaded)
+  for (const ev of r.events) if (REMOTE[ev.name]) REMOTE[ev.name]();
+  eventSeq = r.seq;
+}
+
 /* ==================================================================== start */
 
 async function start() {
@@ -1470,6 +1486,7 @@ async function start() {
   setInterval(refreshNetworkChip, 30 * 1000);
   setInterval(refreshCast, 60 * 1000);
   setInterval(() => { if (!document.hidden) pollVolume(); }, 700);
+  setInterval(() => { if (!document.hidden) pollEvents(); }, 400);
   viz.frame();
 }
 
