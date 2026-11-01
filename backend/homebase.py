@@ -1134,13 +1134,21 @@ def plex_play(body):
     if item.get('type') == 'episode':
         title = f"{item.get('grandparentTitle', '')} · S{item.get('parentIndex', '?')}E{item.get('index', '?')} · {title}"
     url = server['uri'].rstrip('/') + part['key']
+    # Raspberry Pi 4: H.264 / MPEG-2 / MPEG-4 decode in hardware through V4L2 and HEVC through DRM; their frames go to
+    # the compositor as dma-bufs with no GPU pass (mpv's GPU output dropped frames on 1080p). Other codecs decode in
+    # software and use the GPU output's fast profile.
+    codec = str(item['Media'][0].get('videoCodec') or '').lower()
+    if codec in ('h264', 'hevc', 'h265', 'mpeg2video', 'mpeg4'):
+        video = ['--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland']
+    else:
+        video = ['--hwdec=auto-safe', '--vo=gpu', '--profile=fast']
     env = wayland_env()
     input_conf = os.path.join(CONF_DIR, 'mpv-input.conf')
     os.makedirs(CONF_DIR, exist_ok=True)
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
     cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
-           '--hwdec=auto-safe', '--input-default-bindings=no', f'--input-conf={input_conf}',
+           *video, '--input-default-bindings=no', f'--input-conf={input_conf}',
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1',
            f'--start={offset / 1000:.1f}', url]
