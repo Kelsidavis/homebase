@@ -28,6 +28,11 @@ fi
 # whenever the CPU is busy.
 getent group pipewire >/dev/null && adduser "$USER_NAME" pipewire >/dev/null
 
+# A faster start: Home Base images are set up without Imager's customisation, which is what cloud-init applies, and
+# nothing on the box needs to wait for the network before the interface starts.
+if [ -d /etc/cloud ]; then touch /etc/cloud/cloud-init.disabled; fi
+systemctl disable -q NetworkManager-wait-online.service 2>/dev/null || true
+
 # Boot splash: the Home Base name and three pulsing dots from early boot, so a starting box never looks stalled on a
 # black screen. Its last frame stays up (--retain-splash) until Home Base takes over the display.
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then

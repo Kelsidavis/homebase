@@ -13,6 +13,9 @@ CHROOT
 # Boot quietly to the TV interface; allow 4K at 60 Hz to be chosen in Settings.
 CONFIG="${ROOTFS_DIR}/boot/firmware/config.txt"
 grep -q '^hdmi_enable_4kp60=1' "$CONFIG" || printf '\n[all]\nhdmi_enable_4kp60=1\n' >> "$CONFIG"
+# A faster, quieter start: no rainbow square, no one-second pause before Linux (the same block homebase-bootcfg edits)
+grep -q 'homebase-bootcfg' "$CONFIG" || printf '%s\n' '# >>> Home Base boot settings (homebase-bootcfg)' '[all]' \
+  'disable_splash=1' 'boot_delay=0' '# <<< Home Base boot settings' >> "$CONFIG"
 CMDLINE="${ROOTFS_DIR}/boot/firmware/cmdline.txt"
 # (console=tty1 stays: with no console the boot stalled before the root disk was mounted, and on another VT the TV
 # showed that VT rather than Home Base. Raspberry Pi OS keeps it the same way.)
