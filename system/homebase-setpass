@@ -1,0 +1,9 @@
+#!/bin/sh
+# Set the homebase user's login password from one line on stdin.
+# Only this user's password can be changed through this helper.
+IFS= read -r pw || exit 1
+if [ ${#pw} -lt 8 ]; then
+  echo "Password must be at least 8 characters" >&2
+  exit 1
+fi
+printf 'homebase:%s\n' "$pw" | chpasswd

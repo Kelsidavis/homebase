@@ -1,0 +1,4 @@
+image/work/
+image/deploy/
+__pycache__/
+*.pyc

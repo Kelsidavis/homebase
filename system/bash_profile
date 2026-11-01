@@ -1,0 +1,7 @@
+# Home Base: on the TV console (tty1), run the kiosk and restart it if it ever exits.
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "$WAYLAND_DISPLAY" ]; then
+  while true; do
+    cage -d -s -- /opt/homebase/bin/homebase-session
+    sleep 2
+  done
+fi

@@ -1,0 +1,16 @@
+{
+  "HomepageLocation": "http://127.0.0.1:8099/",
+  "HomepageIsNewTabPage": false,
+  "TranslateEnabled": false,
+  "PasswordManagerEnabled": false,
+  "AutofillAddressEnabled": false,
+  "AutofillCreditCardEnabled": false,
+  "DefaultBrowserSettingEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "MetricsReportingEnabled": false,
+  "PromotionsEnabled": false,
+  "DefaultNotificationsSetting": 2,
+  "AudioCaptureAllowed": false,
+  "VideoCaptureAllowed": false
+}

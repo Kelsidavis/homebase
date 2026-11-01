@@ -1,0 +1,11 @@
+[Unit]
+Description=Plex cast receiver (plex-mpv-shim)
+After=network-online.target homebase.service
+
+[Service]
+ExecStart=/opt/homebase/bin/plex-mpv-shim-run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

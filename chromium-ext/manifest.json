@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Home Base Kiosk",
+  "version": "1.0",
+  "description": "Home key returns to Home Base; YouTube opens in its TV interface.",
+  "permissions": ["declarativeNetRequest"],
+  "host_permissions": ["*://*.youtube.com/*"],
+  "declarative_net_request": {
+    "rule_resources": [{ "id": "youtube_tv", "enabled": true, "path": "rules.json" }]
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "exclude_matches": ["http://127.0.0.1:8099/*"],
+      "js": ["home-key.js"],
+      "run_at": "document_start",
+      "all_frames": false
+    },
+    {
+      "matches": ["*://www.youtube.com/tv*"],
+      "js": ["youtube-tv.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    }
+  ]
+}

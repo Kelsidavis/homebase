@@ -1,0 +1,13 @@
+#!/bin/sh
+# Start the Plex cast receiver inside the TV's Wayland session, so videos sent
+# from the Plex app open full screen over the home screen.
+RUNTIME="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+while [ ! -f "$RUNTIME/homebase-wayland" ]; do sleep 2; done
+export XDG_RUNTIME_DIR="$RUNTIME"
+export WAYLAND_DISPLAY="$(cat "$RUNTIME/homebase-wayland")"
+CONF="$HOME/.config/plex-mpv-shim"
+if [ ! -f "$CONF/conf.json" ]; then
+  mkdir -p "$CONF"
+  printf '{\n  "player_name": "%s",\n  "fullscreen": true,\n  "enable_gui": false,\n  "audio_output": "pipewire"\n}\n' "$(hostname)" > "$CONF/conf.json"
+fi
+exec /opt/homebase/venv/bin/plex-mpv-shim
