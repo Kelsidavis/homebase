@@ -1630,11 +1630,22 @@ const yt = {
     try {
       if (this.tab === 'home') {
         const r = await api('/api/yt/home');
-        if (!r.subs) {
-          content.replaceChildren(h('div', { class: 'empty' }, 'Follow some channels and their new videos appear here. Find a video with Search, open it, then its channel, and press Subscribe.'));
-          return;
-        }
-        this.fillVideos(content, r.videos);
+        content.className = 'yt-rows';
+        const rows = [];
+        if (r.continue.length) rows.push(this.row('Continue watching', r.continue));
+        if (r.videos.length) rows.push(this.row('From your subscriptions', r.videos));
+        r.topics.forEach((title, i) => {
+          const strip = h('div', { class: 'yt-strip' }, h('div', { class: 'empty small' }, 'Loading…'));
+          const section = h('section', { class: 'yt-row' }, h('h3', null, title), strip);
+          rows.push(section);
+          api(`/api/yt/topic?i=${i}`).then((t) => {
+            if (!t.videos.length) { section.remove(); return; }
+            strip.replaceChildren(...t.videos.map((v) => this.card(v)));
+            this.focusStart();
+          }).catch(() => section.remove());
+        });
+        content.replaceChildren(...rows);
+        this.focusStart();
       } else if (this.tab === 'subs') {
         const subs = await api('/api/yt/subs');
         if (!subs.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No subscriptions yet.')); return; }
@@ -1656,17 +1667,31 @@ const yt = {
   fillVideos(content, videos) {
     content.className = 'grid videos';
     if (!videos.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No videos.')); return; }
-    // arriving at the screen (focus still on Home or nowhere): start on the first video
-    setTimeout(() => { if (!$('#youtube-body').contains(document.activeElement)) focusIn('#youtube-body .grid'); }, 100);   // (after show()'s own focus)
-    content.replaceChildren(...videos.map((v) => {
-      const img = h('div', { class: 'img' });
-      img.style.backgroundImage = `url("${v.thumb}")`;
-      const dur = v.live ? 'LIVE' : v.duration ? fmtTime(v.duration) : '';
-      const prog = v.position && v.duration ? h('div', { class: 'prog' }, h('i', { style: { width: `${Math.min(100, v.position / v.duration * 100)}%` } })) : null;
-      return h('button', { class: 'card-item', onclick: () => this.open({ kind: 'video', video: v }) },
-        h('div', { class: 'poster-wrap' }, img, dur ? h('span', { class: 'dur' }, dur) : null, prog),
-        h('div', { class: 't1' }, v.title), h('div', { class: 't2' }, [v.channel, ytAgo(v.published)].filter(Boolean).join(' · ')));
-    }));
+    this.focusStart();
+    content.replaceChildren(...videos.map((v) => this.card(v)));
+  },
+
+  // arriving at the screen (focus still on Home or nowhere): start on the first video
+  focusStart() {
+    setTimeout(() => {   // (after show()'s own focus)
+      if ($('#youtube-body').contains(document.activeElement)) return;
+      const first = $('#youtube-body .card-item');
+      if (first) first.focus();
+    }, 100);
+  },
+
+  row(title, videos) {
+    return h('section', { class: 'yt-row' }, h('h3', null, title), h('div', { class: 'yt-strip' }, videos.map((v) => this.card(v))));
+  },
+
+  card(v) {
+    const img = h('div', { class: 'img' });
+    img.style.backgroundImage = `url("${v.thumb}")`;
+    const dur = v.live ? 'LIVE' : v.duration ? fmtTime(v.duration) : '';
+    const prog = v.position && v.duration ? h('div', { class: 'prog' }, h('i', { style: { width: `${Math.min(100, v.position / v.duration * 100)}%` } })) : null;
+    return h('button', { class: 'card-item', onclick: () => this.open({ kind: 'video', video: v }) },
+      h('div', { class: 'poster-wrap' }, img, dur ? h('span', { class: 'dur' }, dur) : null, prog),
+      h('div', { class: 't1' }, v.title), h('div', { class: 't2' }, [v.channel, ytAgo(v.published)].filter(Boolean).join(' · ')));
   },
 
   async renderVideo(body, v) {

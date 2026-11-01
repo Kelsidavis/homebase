@@ -1358,15 +1358,62 @@ def datetime_ts(text):
     return datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()
 
 
+# Rows of this week's videos on the YouTube home screen, so it has something to watch before any subscriptions
+# (YouTube's own trending page is gone). No news: the news ticker sticks to the AP for that.
+YT_TOPICS = [('Music', 'music video'), ('Movie trailers', 'official trailer'), ('Science', 'science'),
+             ('Comedy', 'comedy'), ('Gaming', 'gaming'), ('Sports highlights', 'highlights'), ('Cooking', 'cooking'),
+             ('Nature', 'nature documentary')]
+
+
+def _yt_topic_videos(i):
+    st = load_settings()
+    country = (st['country'] or st['weather'].get('country') or 'US').upper()
+    query = YT_TOPICS[i][1]
+    # this week's videos ranked for the country; music by views (by relevance it surfaced racy small-label videos)
+    sp = 'CAMSBAgDEAE' if i == 0 else 'EgQIAxAB'
+
+    def fetch():
+        url = (f'https://www.youtube.com/results?search_query={urllib.parse.quote_plus(query)}'
+               f'&sp={sp}&gl={urllib.parse.quote(country)}&hl=en')
+        d = _ytdlp_json(['--playlist-items', '1-20', '--extractor-args', 'youtube:lang=en', url])
+        return [_yt_video(e) for e in d.get('entries') or []
+                if e.get('id') and '/shorts/' not in str(e.get('url') or '') and e.get('ie_key') in (None, 'Youtube')]
+    return _yt_cached(('topic', query, country), 3 * 3600, fetch)
+
+
+def yt_topic(q):
+    try:
+        i = int((q.get('i') or ['-1'])[0])
+    except ValueError:
+        i = -1
+    if not 0 <= i < len(YT_TOPICS):
+        raise ApiError('no such topic')
+    return {'title': YT_TOPICS[i][0], 'videos': _yt_topic_videos(i)}
+
+
+def _yt_warm_topics():
+    """Fill the home screen's topic rows ahead of time, and again before they expire."""
+    time.sleep(20)
+    while True:
+        for i in range(len(YT_TOPICS)):
+            with _yt_cache_lock:   # (refresh before the old rows expire: never a cold load on screen)
+                for k in [k for k in _yt_cache if k[:2] == ('topic', YT_TOPICS[i][1])]:
+                    del _yt_cache[k]
+            _safe(lambda: _yt_topic_videos(i), None)
+        time.sleep(3 * 3600 - 600)
+
+
 def yt_home(q):
-    subs = load_settings()['youtube']['subs']
+    st = load_settings()['youtube']
+    subs = st['subs']
     from concurrent.futures import ThreadPoolExecutor
     videos = []
     with ThreadPoolExecutor(max_workers=6) as pool:
         for feed in pool.map(lambda sub: _safe(lambda: _yt_feed(sub['id']), []), subs):
             videos.extend(feed)
     videos.sort(key=lambda v: -(v.get('published') or 0))
-    return {'subs': len(subs), 'videos': videos[:80]}
+    resume = [h for h in st['history'] if h.get('duration') and 30 < h.get('position', 0) < 0.95 * h['duration']]
+    return {'subs': len(subs), 'videos': videos[:80], 'continue': resume[:20], 'topics': [t[0] for t in YT_TOPICS]}
 
 
 def _safe(fn, default):
@@ -1579,6 +1626,7 @@ ROUTES_GET = {
     '/api/yt/search': yt_search,
     '/api/yt/channel': yt_channel,
     '/api/yt/home': yt_home,
+    '/api/yt/topic': yt_topic,
     '/api/yt/subs': yt_subs,
     '/api/yt/history': yt_history,
     '/api/player': lambda q: player_status(),
@@ -1795,6 +1843,7 @@ def main():
         threading.Thread(target=watch_keys, name='keys', daemon=True).start()
         threading.Thread(target=watch_tv, name='tv', daemon=True).start()
         threading.Thread(target=_yt_update_tools, name='yt-dlp-update', daemon=True).start()
+        threading.Thread(target=_yt_warm_topics, name='yt-topics', daemon=True).start()
     httpd = ThreadingHTTPServer((HOST, PORT), Handler)
     httpd.daemon_threads = True
     print(f'Home Base backend on http://{HOST}:{PORT}', flush=True)
