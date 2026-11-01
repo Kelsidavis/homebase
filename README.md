@@ -52,7 +52,7 @@ remote with a trackpad, though any USB keyboard and mouse work.
 
 ### Option 1: flash the image
 
-1. Download `homebase-<date>.img.xz` from the
+1. Download the latest `homebase-<version>.img.xz` from the
    [releases page](../../releases).
 2. Write it to a microSD card with
    [Raspberry Pi Imager](https://www.raspberrypi.com/software/) ("Use custom").
