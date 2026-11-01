@@ -18,9 +18,6 @@ sed -i 's/ console=tty1//; s/$/ quiet loglevel=3 logo.nologo vt.global_cursor_de
 # The root partition is grown on first boot by homebase-expand.service, not the initramfs (its disk ID change could
 # be lost, leaving the command line pointing at a missing root device): drop the initramfs's resize trigger.
 sed -i 's/ resize\b//' "$CMDLINE"
-# 768 MB for decoded video frames and screen buffers (CMA; 512 MB by default): 4K HEVC frames are four times the size
-# of 1080p ones. Unused, the memory stays available to programs.
-grep -q ' cma=' "$CMDLINE" || sed -i '1 s/$/ cma=768M/' "$CMDLINE"
 install -m 755 files/homebase/system/homebase-expand "${ROOTFS_DIR}/usr/local/sbin/homebase-expand"
 install -m 644 files/homebase/system/homebase-expand.service "${ROOTFS_DIR}/etc/systemd/system/homebase-expand.service"
 on_chroot <<'CHROOT'
