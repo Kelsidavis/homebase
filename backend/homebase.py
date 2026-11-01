@@ -972,18 +972,20 @@ class Handler(BaseHTTPRequestHandler):
         except (urllib.error.URLError, OSError) as e:
             self._json({'error': f'Network error: {e}'}, 502)
 
-    def _allowed(self, post=False):
-        """Only serve the Home Base page itself.
+    def _allowed(self, post=False, page=False):
+        """Guard the API against other sites open in the same browser.
 
-        Other sites open in the same browser (YouTube, Plex, anything linked
-        from them) can send requests to 127.0.0.1. Reject anything that is not
-        same-origin, any unexpected Host (DNS rebinding), and POSTs without a
-        JSON body type (which would skip the browser's CORS preflight).
+        YouTube, Plex and anything linked from them can send requests to
+        127.0.0.1. API and Plex requests must be same-origin, POSTs must carry
+        a JSON body type (so the browser's CORS preflight applies), and every
+        request must name our own Host (DNS rebinding). The page itself is
+        allowed from anywhere: the Home key navigates to it from YouTube and
+        Plex, and the UI files hold nothing private.
         """
         hosts = {f'127.0.0.1:{PORT}', f'localhost:{PORT}', f'{HOST}:{PORT}'}
         ok = self.headers.get('Host', '') in hosts
         site = self.headers.get('Sec-Fetch-Site')
-        if site and site not in ('same-origin', 'none'):
+        if site and site not in ('same-origin', 'none') and not page:
             ok = False
         origin = self.headers.get('Origin')
         if origin and origin not in {f'http://{h}' for h in hosts}:
@@ -995,9 +997,10 @@ class Handler(BaseHTTPRequestHandler):
         return ok
 
     def do_GET(self):
-        if not self._allowed():
-            return
         url = urllib.parse.urlsplit(self.path)
+        page = not url.path.startswith(('/api/', '/plex/'))
+        if not self._allowed(page=page):
+            return
         q = urllib.parse.parse_qs(url.query)
         if url.path in ROUTES_GET:
             return self._dispatch(ROUTES_GET[url.path], q)
