@@ -444,9 +444,64 @@ async function renderSettings(tab) {
     if (tab === 'network') await renderNetwork(panel);
     else if (tab === 'display') await renderDisplay(panel);
     else if (tab === 'appearance') renderAppearance(panel);
+    else if (tab === 'system') await renderSystem(panel);
     else await renderHomeSettings(panel);
   } catch (err) {
     panel.replaceChildren(h('div', { class: 'note err' }, err.message));
+  }
+}
+
+// ---------------------------------------------------------------- system monitor
+
+async function renderSystem(panel) {
+  const meter = (label) => {
+    const value = h('span', { class: 'sys-value' }, '—');
+    const sub = h('span', { class: 'note' }, '');
+    const fill = h('i');
+    return { el: h('div', { class: 'sys-meter' }, h('div', { class: 'sys-head' }, h('span', null, label), value), h('div', { class: 'sys-bar' }, fill), sub),
+      set(pct, text, note, warn) {
+        fill.style.width = `${Math.max(0, Math.min(100, pct || 0))}%`;
+        fill.classList.toggle('warn', !!warn);
+        value.textContent = text;
+        sub.textContent = note || '';
+      } };
+  };
+  const temp = meter('Temperature');
+  const cpu = meter('CPU');
+  const gpu = meter('GPU');
+  const mem = meter('Memory');
+  const gmem = meter('Video memory');
+  const cores = h('div', { class: 'sys-cores' });
+  const status = h('div', { class: 'note' }, '');
+  const facts = h('div', { class: 'note' }, '');
+  panel.replaceChildren(h('div', { class: 'cols' },
+    h('div', { class: 'col' }, card('Live', temp.el, cpu.el, cores, gpu.el), card(null, status)),
+    h('div', { class: 'col' }, card('Memory', mem.el, gmem.el), card(null, facts))));
+  const gb = (b) => `${(b / 1073741824).toFixed(1)} GB`;
+  const mb = (b) => `${Math.round(b / 1048576)} MB`;
+  const tick = async () => {
+    if (state.view !== 'settings' || state.settingsTab !== 'system' || !panel.isConnected) return false;
+    let s;
+    try { s = await api('/api/system'); } catch { return true; }
+    const t = s.unit === 'f' ? `${Math.round(s.temp * 9 / 5 + 32)}°F` : `${Math.round(s.temp)}°C`;
+    temp.set(s.temp / 85 * 100, t, s.temp >= 80 ? 'Hot: the Pi slows itself down at 80–85°C' : s.temp >= 70 ? 'Warm' : 'Normal', s.temp >= 75);
+    cpu.set(s.cpu.total, `${Math.round(s.cpu.total)}%`, s.cpu.mhz ? `${s.cpu.mhz} MHz${s.cpu.max_mhz ? ` of ${s.cpu.max_mhz}` : ''} · load ${s.load.map((x) => x.toFixed(2)).join(' ')}` : '', s.cpu.total > 90);
+    cores.replaceChildren(...s.cpu.cores.map((c, i) => h('div', { class: 'sys-core', title: `Core ${i + 1}` }, h('i', { style: { height: `${Math.max(2, c)}%` } }), h('span', null, String(i + 1)))));
+    gpu.set(s.gpu.busy ?? 0, s.gpu.busy == null ? '—' : `${Math.round(s.gpu.busy)}%`, s.gpu.mhz ? `${s.gpu.mhz} MHz` : '', (s.gpu.busy ?? 0) > 90);
+    mem.set(s.mem.used / s.mem.total * 100, `${gb(s.mem.used)} of ${gb(s.mem.total)}`, s.mem.swap_total ? `Swap ${mb(s.mem.swap_used)} of ${gb(s.mem.swap_total)}` : '', s.mem.used / s.mem.total > 0.9);
+    gmem.set(s.mem.gpu_total ? s.mem.gpu_used / s.mem.gpu_total * 100 : 0, s.mem.gpu_total ? `${mb(s.mem.gpu_used)} of ${mb(s.mem.gpu_total)}` : '—', 'Shared with the GPU for video and graphics');
+    const now = s.throttle.now, past = s.throttle.since_boot.filter((x) => !now.includes(x));
+    status.replaceChildren(...[
+      h('div', { class: 'row' }, h('span', { class: 'k' }, 'Power and heat'),
+        h('span', { class: now.length ? 'err' : '' }, now.length ? `Now: ${now.join(', ')}` : 'All good')),
+      past.length ? h('p', { class: 'note' }, `Since start-up: ${past.join(', ')}. ${past.includes('under-voltage') ? 'Under-voltage means the power supply is too weak. ' : ''}${past.some((x) => x !== 'under-voltage') ? 'Heat limits mean it needs better cooling (a heatsink or fan).' : ''}`) : null].filter(Boolean));
+    const up = s.uptime, d = Math.floor(up / 86400), hr = Math.floor(up % 86400 / 3600), mi = Math.floor(up % 3600 / 60);
+    facts.textContent = `Running for ${d ? `${d} d ` : ''}${hr} h ${mi} min`;
+    return true;
+  };
+  if (await tick()) {
+    const loop = async () => { await new Promise((r) => setTimeout(r, 2000)); if (await tick()) loop(); };
+    loop();
   }
 }
 
@@ -536,13 +591,22 @@ async function renderNetwork(panel) {
     else passwordDialog(ssh.user, async (pw) => { if (await apply(true, pw)) ssh.has_password = true; });
   });
   if (!sshOn) sshCmd.textContent = 'Off. Nobody can log in over the network.';
+  const pwNote = h('span', { class: 'note' }, ssh.has_password ? 'Set' : 'Not set. Needed for maintenance and remote access.');
+  const pwBtn = h('button', { class: 'pill', onclick: () => changePasswordDialog(ssh.has_password, () => {
+    ssh.has_password = true;
+    pwNote.textContent = 'Set';
+    pwBtn.textContent = 'Change';
+  }) }, ssh.has_password ? 'Change' : 'Set password');
   const sshCard = card(null,
     h('div', { class: 'row' },
       h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } },
         h('span', null, 'Remote access (SSH)'),
         h('span', { class: 'note' }, 'Log in from another computer on your network')),
       sshSwitch),
-    sshCmd);
+    sshCmd,
+    h('div', { class: 'row' },
+      h('div', { style: { display: 'flex', flexDirection: 'column', gap: '6px' } }, h('span', null, 'Password'), pwNote),
+      pwBtn));
 
   const cc = state.settings.country;
   const countryCard = card(null,
@@ -581,6 +645,38 @@ function passwordDialog(user, onSet) {
         if (pw.value !== pw2.value) { err.textContent = 'The two passwords don’t match.'; return; }
         closeDialog();
         onSet(pw.value);
+      } },
+    ],
+  });
+}
+
+// The box's own password (setup and Settings): new twice, and the current one when changing it
+function passwordFields(hasPassword) {
+  const cur = hasPassword ? h('input', { class: 'text-input', type: 'password', placeholder: 'Current password' }) : null;
+  const pw = h('input', { class: 'text-input', type: 'password', placeholder: 'New password (at least 8 characters)' });
+  const pw2 = h('input', { class: 'text-input', type: 'password', placeholder: 'Type it again' });
+  const err = h('p', { class: 'note err' });
+  const submit = async () => {
+    if (pw.value.length < 8) { err.textContent = 'Use at least 8 characters.'; return false; }
+    if (pw.value !== pw2.value) { err.textContent = 'The two passwords don’t match.'; return false; }
+    try {
+      await api('/api/password', { password: pw.value, current: cur ? cur.value : '' });
+      return true;
+    } catch (e) { err.textContent = e.message; return false; }
+  };
+  return { inputs: [cur, pw, pw2, err].filter(Boolean), submit, last: pw2 };
+}
+
+function changePasswordDialog(hasPassword, onDone) {
+  const f = passwordFields(hasPassword);
+  f.last.dataset.enter = 'pw-save';
+  openDialog({
+    title: hasPassword ? 'Change password' : 'Set a password',
+    body: [h('p', null, 'This box’s password, for maintenance such as installing system updates over SSH. Watching TV never needs it.'), ...f.inputs],
+    actions: [
+      { label: 'Cancel', onClick: closeDialog },
+      { label: 'Save', primary: true, id: 'pw-save', onClick: async () => {
+        if (await f.submit()) { closeDialog(); toast('Password saved'); if (onDone) onDone(); }
       } },
     ],
   });
@@ -1336,7 +1432,7 @@ audio.addEventListener('error', () => {
 
 const setup = {
   step: 0,
-  steps: ['welcome', 'country', 'network', 'location', 'theme', 'plex', 'done'],
+  steps: ['welcome', 'country', 'network', 'password', 'location', 'theme', 'plex', 'done'],
   netTimer: null,
 
   go(i) {
@@ -1374,6 +1470,21 @@ const setup = {
         }, state.settings.country), { next: state.settings.country ? advance : null });
     }
     if (name === 'network') return this.renderNetwork(advance);
+    if (name === 'password') {
+      this.frame('Choose a password', 'This box’s own password, for maintenance such as remote access and system updates. Watching TV never asks for it.',
+        [h('div', { class: 'empty' }, 'Checking…')], { skip: advance });
+      api('/api/ssh').then((s) => {
+        if (this.steps[this.step] !== 'password') return;
+        if (s.has_password) {
+          return this.frame('Password', 'This box already has a password. You can change it any time in Settings.', [], { next: advance });
+        }
+        const f = passwordFields(false);
+        f.last.dataset.enter = 'setup-next';
+        this.frame('Choose a password', 'This box’s own password, for maintenance such as remote access and system updates. Watching TV never asks for it.',
+          f.inputs, { next: async () => { if (await f.submit()) { toast('Password saved'); advance(); } }, skip: advance });
+      }).catch(() => advance());
+      return undefined;
+    }
     if (name === 'location') {
       const current = state.settings.weather.name;
       return this.frame('Your location', 'Used for the weather and to set the clock. Type your city or ZIP / postcode.',

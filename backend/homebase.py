@@ -365,6 +365,116 @@ def ssh_set(body):
         raise ApiError((err or out).strip() or 'Could not change SSH', 500)
     return ssh_status()
 
+def password_set(body):
+    """Set (or change) this box's password - the Home Base user's, for maintenance (sudo; SSH if it allows
+    passwords). Changing one asks for the current password: the remote alone must not be enough to take it over."""
+    new, current = str(body.get('password') or ''), str(body.get('current') or '')
+    if len(new) < 8:
+        raise ApiError('Use at least 8 characters for the password')
+    if '\n' in new or '\r' in new:
+        raise ApiError('The password cannot contain line breaks')
+    if FAKE:
+        _fake['has_password'] = True
+        return {'has_password': True}
+    if _has_password():
+        code, _, _ = run(['sudo', '-S', '-k', '-p', '', 'true'], stdin=current + '\n', timeout=20)
+        if code != 0:
+            raise ApiError('The current password is not right', 403)
+    code, out, err = run(['/usr/local/sbin/homebase-setpass'], sudo=True, stdin=new + '\n')
+    if code != 0:
+        raise ApiError((err or out).strip() or 'Could not set the password', 500)
+    return {'has_password': True}
+
+# ---------------------------------------------------------------- system monitor (Settings > System)
+
+_sys_prev = {}
+V3D_STATS = glob.glob('/sys/devices/platform/v3dbus/*.v3d/gpu_stats') + glob.glob('/sys/class/drm/card*/device/gpu_stats')
+
+
+def _read(path, default=''):
+    try:
+        with open(path) as f:
+            return f.read()
+    except OSError:
+        return default
+
+
+def _cpu_times():
+    out = []
+    for line in _read('/proc/stat').splitlines():
+        if line.startswith('cpu'):
+            name, *vals = line.split()
+            v = [int(x) for x in vals[:8]]
+            idle = v[3] + v[4]
+            out.append((name, sum(v), idle))
+    return out
+
+
+def _gpu_busy_ns():
+    """(timestamp, busy ns of the busiest V3D queue so far) - bin and render run side by side."""
+    for path in V3D_STATS:
+        rows = [line.split() for line in _read(path).splitlines()[1:]]
+        rows = [r for r in rows if len(r) >= 4 and r[1].isdigit()]
+        if rows:
+            return int(rows[0][1]), {r[0]: int(r[3]) for r in rows}
+    return None
+
+
+def _vcgencmd(*args):
+    code, out, _ = run(['vcgencmd', *args], timeout=5)
+    return out.strip() if code == 0 else ''
+
+
+def system_stats(q):
+    """A snapshot for the live monitor: CPU (overall and per core), temperature, GPU, memory, throttling."""
+    if FAKE:
+        import random
+        return {'temp': 48 + random.random() * 4, 'cpu': {'total': 12.0, 'cores': [10, 14, 9, 15], 'mhz': 1500, 'max_mhz': 1800},
+                'gpu': {'busy': 6.0, 'mhz': 500}, 'mem': {'total': 3.9e9, 'used': 0.9e9, 'swap_total': 2e9, 'swap_used': 0,
+                'gpu_total': 512e6, 'gpu_used': 40e6}, 'throttle': {'now': [], 'since_boot': []}, 'uptime': 3600, 'load': [0.3, 0.2, 0.1]}
+    now = _cpu_times()
+    gpu = _gpu_busy_ns()
+    prev = _sys_prev.get('cpu')
+    if not prev:   # (first look: a short sample)
+        time.sleep(0.25)
+        prev, now = now, _cpu_times()
+    cores = []
+    for (name, tot, idle), (_, ptot, pidle) in zip(now, prev):
+        dt = tot - ptot
+        cores.append(round(100.0 * (1 - (idle - pidle) / dt), 1) if dt > 0 else 0.0)
+    _sys_prev['cpu'] = now
+    gpu_busy = None
+    if gpu:
+        pg = _sys_prev.get('gpu')
+        if pg and gpu[0] > pg[0]:
+            gpu_busy = round(min(100.0, 100.0 * max(gpu[1].get(k, 0) - pg[1].get(k, 0) for k in gpu[1]) / (gpu[0] - pg[0])), 1)
+        _sys_prev['gpu'] = gpu
+    mem = {}
+    for line in _read('/proc/meminfo').splitlines():
+        k, _, v = line.partition(':')
+        if v.strip().endswith('kB'):
+            mem[k] = int(v.split()[0]) * 1024
+    def mhz(which):
+        v = _vcgencmd('measure_clock', which)
+        return round(int(v.split('=')[1]) / 1e6) if '=' in v else None
+    flags = int(_vcgencmd('get_throttled').partition('=')[2] or '0', 16)
+    names = {0: 'under-voltage', 1: 'speed capped', 2: 'throttled', 3: 'heat limit'}
+    cpu_max = _read('/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq').strip()
+    return {
+        'temp': int(_read('/sys/class/thermal/thermal_zone0/temp', '0').strip() or 0) / 1000.0,
+        'cpu': {'total': cores[0] if cores else 0.0, 'cores': cores[1:], 'mhz': mhz('arm'),
+                'max_mhz': round(int(cpu_max) / 1000) if cpu_max.isdigit() else None},
+        'gpu': {'busy': gpu_busy, 'mhz': mhz('v3d')},
+        'mem': {'total': mem.get('MemTotal', 0), 'used': mem.get('MemTotal', 0) - mem.get('MemAvailable', 0),
+                'swap_total': mem.get('SwapTotal', 0), 'swap_used': mem.get('SwapTotal', 0) - mem.get('SwapFree', 0),
+                'gpu_total': mem.get('CmaTotal', 0), 'gpu_used': mem.get('CmaTotal', 0) - mem.get('CmaFree', 0)},
+        'throttle': {'now': [n for b, n in names.items() if flags & (1 << b)],
+                     'since_boot': [n for b, n in names.items() if flags & (1 << (b + 16))]},
+        'unit': weather_unit(load_settings()),   # (°F or °C as the weather shows it)
+        'uptime': float(_read('/proc/uptime', '0').split()[0] or 0),
+        'load': [float(x) for x in _read('/proc/loadavg', '0 0 0').split()[:3]],
+    }
+
 # ---------------------------------------------------------------- country and time zone
 
 
@@ -1930,6 +2040,7 @@ ROUTES_GET = {
     '/api/network': lambda q: network_status(),
     '/api/wifi/scan': lambda q: wifi_scan(),
     '/api/ssh': lambda q: ssh_status(),
+    '/api/system': system_stats,
     '/api/display': lambda q: display_info(),
     '/api/weather': lambda q: get_weather(),
     '/api/geocode': lambda q: geocode(q.get('q', [''])[0]),
@@ -1994,6 +2105,7 @@ ROUTES_POST = {
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
     '/api/yt/play': yt_play,
+    '/api/password': password_set,
     '/api/yt/signin': yt_signin,
     '/api/yt/prepare': yt_prepare,
     '/api/yt/subscribe': yt_subscribe,

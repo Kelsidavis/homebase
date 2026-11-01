@@ -529,3 +529,15 @@ body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
 .yt-signin .yt-signin-url { font-size: 40px; color: var(--text); font-weight: 600; }
 .yt-signin .yt-signin-code { white-space: nowrap; font-size: 52px; color: var(--text); font-weight: 700; letter-spacing: 0.08em; font-variant-numeric: tabular-nums; }
 .yt-signin .yt-signin-status { margin-top: 18px; font-size: 26px; }
+
+/* ------------------------------------------------------------ settings > system */
+.sys-meter { display: flex; flex-direction: column; gap: 10px; margin: 6px 0 22px; }
+.sys-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 30px; }
+.sys-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sys-bar { height: 14px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.sys-bar i { display: block; height: 100%; width: 0; border-radius: inherit; background: var(--accent); transition: width 600ms ease; }
+.sys-bar i.warn { background: #e8735a; }
+.sys-cores { display: flex; gap: 14px; height: 90px; margin: -6px 0 22px; }
+.sys-core { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; gap: 6px; }
+.sys-core i { width: 100%; border-radius: 8px; background: var(--accent); opacity: 0.75; transition: height 600ms ease; }
+.sys-core span { font-size: 18px; color: var(--muted); }
