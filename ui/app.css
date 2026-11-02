@@ -570,3 +570,8 @@ body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
 .music-group h2 { font-size: 30px; font-weight: 600; margin: 0 0 16px; opacity: 0.85; }
 .music-results .grid { overflow: visible; }
 .music-results .tracks { overflow: visible; }
+
+/* Search within a music category: the button sits at the right of the tabs; its box opens under them */
+.lib-tabs .category-search-btn { margin-left: auto; }
+.category-search { width: 100%; margin-bottom: 24px; }
+.card-item[hidden] { display: none; }
