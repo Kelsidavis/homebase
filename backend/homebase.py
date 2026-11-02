@@ -1248,6 +1248,13 @@ def plex_server():
 # sound out while the picture went on. 100 ms of buffer rides those out; mpv delays the picture to match.
 MPV_AUDIO = ['--audio-buffer=0.5', '--pipewire-buffer=100']
 
+# Buffer network video: start, and resume after a stall, only with a few seconds read ahead, rather than stuttering
+# while Wi-Fi or the server catches up; read well ahead (up to 300 MiB) to ride out slow patches; and reconnect a
+# dropped connection, which YouTube's servers do mid-stream, instead of stopping.
+MPV_STREAM = ['--cache=yes', '--cache-pause-initial=yes', '--cache-pause-wait=4', '--demuxer-readahead-secs=60',
+              '--demuxer-max-bytes=300MiB', '--demuxer-max-back-bytes=50MiB',
+              '--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_on_network_error=1,reconnect_delay_max=5']
+
 MPV_INPUT = '''# Home Base remote keys for mpv (a remote's play/pause key reaches mpv as PLAY: every play key toggles)
 ESC quit
 BS quit
@@ -1434,11 +1441,7 @@ def _plex_play(body):
     cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
            *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
-           f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1',
-           # Buffer before playing: start (and resume after a stall) only with a few seconds read ahead, rather
-           # than stuttering through the first seconds while Wi-Fi catches up
-           '--cache=yes', '--cache-pause-initial=yes', '--cache-pause-wait=4', '--demuxer-readahead-secs=30',
-           '--demuxer-max-bytes=200MiB',
+           f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1', *MPV_STREAM,
            f'--start={offset / 1000:.1f}', url]
     if FAKE:
         return {'ok': True, 'title': title}
@@ -2097,7 +2100,7 @@ def _yt_play(body):
     hdr = streams['headers']
     cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no', '--ytdl=no',
            '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', '--input-default-bindings=no', f'--input-conf={input_conf}',
-           *MPV_AUDIO,
+           *MPV_AUDIO, *MPV_STREAM,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1']
     if hdr.get('User-Agent'):
         cmd.append(f"--user-agent={hdr['User-Agent']}")
