@@ -554,3 +554,13 @@ body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
 .spinner { width: 72px; height: 72px; border-radius: 50%; border: 7px solid rgba(255,255,255,0.18); border-top-color: #fff;
   animation: spin 0.9s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ------------------------------------------------------------ plex: letter index */
+.lib-with-index { flex-grow: 1; min-height: 0; display: flex; gap: 18px; }
+.lib-with-index > .grid { flex-grow: 1; }
+.alpha-bar { flex: 0 0 64px; display: flex; flex-direction: column; justify-content: space-between; padding: 6px 0 30px; }
+.alpha { flex: 1 1 0; min-height: 0; padding: 0; border-radius: 12px; font-size: 22px; font-weight: 600; color: var(--text-2);
+  background: transparent; display: flex; align-items: center; justify-content: center; }
+.alpha.none { color: var(--muted); opacity: 0.35; }
+.alpha.here { color: var(--accent); }
+.alpha:focus-visible, .alpha:focus { background: var(--accent); color: var(--accent-ink); outline: none; }

@@ -1622,11 +1622,12 @@ const plexv = {
     } else {
       let sections = [];
       try { sections = await this.videoSections(); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
-      const tabs = [['continue', 'Continue watching'], ['recent', 'Recently added'], ...sections.map((s) => [s.key, s.title])];
+      const tabs = [['search', 'Search'], ['continue', 'Continue watching'], ['recent', 'Recently added'], ...sections.map((s) => [s.key, s.title])];
       bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
         class: `pill${this.tab === id ? ' selected' : ''}`, onclick: () => { this.tab = id; this.render(); },
       }, label)));
     }
+    if (!top && this.tab === 'search') return this.renderSearch(body, bar);
     body.replaceChildren(bar, content);
     try {
       let items;
@@ -1636,7 +1637,12 @@ const plexv = {
       else if (this.tab === 'recent') {
         items = (await music.plex('/library/recentlyAdded?X-Plex-Container-Start=0&X-Plex-Container-Size=60')).Metadata || [];
         items = items.filter((i) => ['movie', 'show', 'season', 'episode'].includes(i.type));
-      } else items = (await music.plex(`/library/sections/${this.tab}/all?sort=titleSort&X-Plex-Container-Start=0&X-Plex-Container-Size=600`)).Metadata;
+      } else {
+        items = (await music.plex(`/library/sections/${this.tab}/all?sort=titleSort&X-Plex-Container-Start=0&X-Plex-Container-Size=2000`)).Metadata || [];
+        this.fillGrid(content, items);
+        this.addLetterBar(body, content, items);
+        return;
+      }
       this.fillGrid(content, items || []);
     } catch (err) { content.replaceChildren(h('div', { class: 'empty' }, err.message)); }
   },
@@ -1663,6 +1669,67 @@ const plexv = {
       }, h('div', { class: 'poster-wrap' }, img, prog, watched ? h('span', { class: 'seen', html: ICON.check }) : null),
       h('div', { class: 't1' }, name), sub ? h('div', { class: 't2' }, sub) : null);
     }));
+  },
+
+  // Search, as you type (after a pause): movies, shows and episodes on the server
+  renderSearch(body, bar) {
+    const q = h('input', { class: 'text-input', placeholder: 'Search movies and shows', value: this.query || '', style: { flexGrow: 1 } });
+    const results = h('div', { class: 'grid posters' });
+    let timer = null, seq = 0;
+    const run = async () => {
+      const query = q.value.trim();
+      this.query = query;
+      if (query.length < 2) { results.replaceChildren(); return; }
+      const mine = ++seq;
+      results.replaceChildren(...skeletonCards(7));
+      try {
+        const mc = await music.plex(`/hubs/search?query=${encodeURIComponent(query)}&limit=30`);
+        if (mine !== seq) return;   // (a newer search has started)
+        const items = [];
+        for (const hub of mc.Hub || []) {
+          if (['movie', 'show', 'season', 'episode'].includes(hub.type)) items.push(...(hub.Metadata || []));
+        }
+        if (!items.length) { results.replaceChildren(h('div', { class: 'empty' }, `Nothing found for “${query}”.`)); return; }
+        this.fillGrid(results, items);
+      } catch (err) { if (mine === seq) results.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+    };
+    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 450); });
+    q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); run(); } });
+    body.replaceChildren(bar, h('div', { style: { display: 'flex', gap: '16px', marginBottom: '24px' } }, q), results);
+    if (this.query) run();
+    setTimeout(() => q.focus(), 60);
+  },
+
+  // A–Z down the right of a library: OK on a letter jumps to its first title; the letter of the focused title lights
+  addLetterBar(body, grid, items) {
+    if (items.length < 20) return;   // (a short list needs no index)
+    const letterOf = (it) => {
+      const c = String(it.titleSort || it.title || '').trim().charAt(0).toUpperCase();
+      return c >= 'A' && c <= 'Z' ? c : '#';
+    };
+    const cards = [...grid.querySelectorAll('.card-item')];
+    const first = new Map();
+    items.forEach((it, i) => { const l = letterOf(it); if (!first.has(l) && cards[i]) first.set(l, cards[i]); cards[i].dataset.letter = l; });
+    const letters = ['#', ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'];
+    const buttons = new Map();
+    const strip = h('div', { class: 'alpha-bar', role: 'navigation', 'aria-label': 'Jump to letter' }, letters.map((l) => {
+      const target = first.get(l);
+      const b = h('button', { class: `alpha${target ? '' : ' none'}`, disabled: !target, onclick: () => {
+        if (!target) return;
+        target.focus();
+        target.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      } }, l);
+      buttons.set(l, b);
+      return b;
+    }));
+    grid.addEventListener('focusin', (e) => {
+      const l = e.target.dataset && e.target.dataset.letter;
+      if (!l) return;
+      buttons.forEach((b, k) => b.classList.toggle('here', k === l));
+    });
+    const wrap = h('div', { class: 'lib-with-index' });
+    grid.replaceWith(wrap);   // (in the grid's place first; then the grid moves inside)
+    wrap.append(grid, strip);
   },
 
   async renderEpisodes(content, top) {
