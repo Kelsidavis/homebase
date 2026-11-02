@@ -564,3 +564,9 @@ body.busy .ticker .run, body.busy .view { animation-play-state: paused; }
 .alpha.none { color: var(--muted); opacity: 0.35; }
 .alpha.here { color: var(--accent); }
 .alpha:focus-visible, .alpha:focus { background: var(--accent); color: var(--accent-ink); outline: none; }
+
+/* Music search: results grouped as Artists, Albums and Songs, in one scrolling column */
+.music-results { display: flex; flex-direction: column; gap: 36px; overflow-y: auto; min-height: 0; flex-grow: 1; padding-bottom: 40px; }
+.music-group h2 { font-size: 30px; font-weight: 600; margin: 0 0 16px; opacity: 0.85; }
+.music-results .grid { overflow: visible; }
+.music-results .tracks { overflow: visible; }

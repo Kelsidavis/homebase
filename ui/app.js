@@ -1221,7 +1221,7 @@ const music = {
   },
 
   async renderLibrary(body) {
-    const tabs = [['recent', 'Recently added'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
+    const tabs = [['search', 'Search'], ['recent', 'Recently added'], ['albums', 'Albums'], ['artists', 'Artists'], ['playlists', 'Playlists']];
     const top = this.stack[this.stack.length - 1];
     const bar = h('div', { class: 'lib-tabs' },
       top ? h('button', { class: 'pill', onclick: () => this.back() }, h('span', { html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>' }), 'Back') : null,
@@ -1236,6 +1236,7 @@ const music = {
       const sections = await this.musicSections();
       if (!sections.length) { content.replaceChildren(h('div', { class: 'empty' }, 'No music library found on this Plex server.')); return; }
       const key = sections[0].key;
+      if (!top && this.tab === 'search') return this.renderSearch(body, bar, key);
       if (top && top.kind === 'artist') return this.fillGrid(content, (await this.plex(`/library/metadata/${top.key}/children`)).Metadata, 'album');
       if (top && (top.kind === 'album' || top.kind === 'playlist')) {
         const path = top.kind === 'album' ? `/library/metadata/${top.key}/children` : `/playlists/${top.key}/items`;
@@ -1248,6 +1249,45 @@ const music = {
     } catch (err) {
       content.replaceChildren(h('div', { class: 'empty' }, err.message));
     }
+  },
+
+  // Search, as you type (after a pause): artists, albums and songs in the music library
+  renderSearch(body, bar, sectionKey) {
+    const q = h('input', { class: 'text-input', placeholder: 'Search artists, albums and songs', value: this.query || '', style: { flexGrow: 1 } });
+    const results = h('div', { class: 'music-results' });
+    let timer = null, seq = 0;
+    const group = (title, el) => h('div', { class: 'music-group' }, h('h2', null, title), el);
+    const run = async () => {
+      const query = q.value.trim();
+      this.query = query;
+      if (query.length < 2) { results.replaceChildren(); return; }
+      const mine = ++seq;
+      results.replaceChildren(h('div', { class: 'grid' }, ...skeletonCards(7)));
+      try {
+        const mc = await this.plex(`/hubs/search?query=${encodeURIComponent(query)}&sectionId=${sectionKey}&limit=30`);
+        if (mine !== seq) return;   // (a newer search has started)
+        const found = { artist: [], album: [], track: [] };
+        for (const hub of mc.Hub || []) if (found[hub.type]) found[hub.type].push(...(hub.Metadata || []));
+        const parts = [];
+        if (found.artist.length) { const g = h('div', { class: 'grid' }); this.fillGrid(g, found.artist, 'artist'); parts.push(group('Artists', g)); }
+        if (found.album.length) { const g = h('div', { class: 'grid' }); this.fillGrid(g, found.album, 'album'); parts.push(group('Albums', g)); }
+        if (found.track.length) {
+          const songs = found.track;
+          parts.push(group('Songs', h('div', { class: 'tracks' }, songs.map((t, i) => h('button', {
+            class: `track${this.current() && this.current().ratingKey === t.ratingKey ? ' playing' : ''}`,
+            onclick: () => this.playQueue(songs, i),   // (then on through the other songs found)
+          }, h('span', { class: 'n' }, i + 1),
+          h('span', null, t.title, h('span', { class: 's' }, `${t.grandparentTitle || ''} · ${t.parentTitle || ''}`)),
+          h('span', { class: 'd' }, fmtTime((t.duration || 0) / 1000)))))));
+        }
+        results.replaceChildren(...(parts.length ? parts : [h('div', { class: 'empty' }, `Nothing found for “${query}”.`)]));
+      } catch (err) { if (mine === seq) results.replaceChildren(h('div', { class: 'empty' }, err.message)); }
+    };
+    q.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(run, 450); });
+    q.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(timer); run(); } });
+    body.replaceChildren(bar, h('div', { style: { display: 'flex', gap: '16px', marginBottom: '24px' } }, q), results);
+    if (this.query) run();
+    setTimeout(() => q.focus(), 60);
   },
 
   fillGrid(content, items, kind) {
