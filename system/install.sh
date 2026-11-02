@@ -33,6 +33,14 @@ getent group pipewire >/dev/null && adduser "$USER_NAME" pipewire >/dev/null
 if [ -d /etc/cloud ]; then touch /etc/cloud/cloud-init.disabled; fi
 systemctl disable -q NetworkManager-wait-online.service 2>/dev/null || true
 
+# Bluetooth game controllers: with BlueZ's defaults an Xbox Wireless Controller pairs, then drops and re-attaches
+# several times a second with its logo flashing. These settings keep it (and other BLE pads) connected.
+BTCONF=/etc/bluetooth/main.conf
+if [ -f "$BTCONF" ]; then
+  sed -i '/^# >>> Home Base controllers/,/^# <<< Home Base controllers/d' "$BTCONF"
+  sed -i '0,/^\[General\]/s//[General]\n# >>> Home Base controllers\nPrivacy = device\nJustWorksRepairing = always\nClass = 0x000100\nFastConnectable = true\n# <<< Home Base controllers/' "$BTCONF"
+fi
+
 # Boot splash: the Home Base name and three pulsing dots from early boot, so a starting box never looks stalled on a
 # black screen. Its last frame stays up (--retain-splash) until Home Base takes over the display.
 if command -v plymouth-set-default-theme >/dev/null 2>&1; then
