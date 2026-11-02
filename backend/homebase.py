@@ -1244,6 +1244,10 @@ def plex_server():
 # home screen. Progress goes back to the Plex server, so Continue Watching and resume
 # work on every device.
 
+# Sound with a margin: mpv's default hands PipeWire one graph cycle (~21 ms) at a time, so any short stall cut the
+# sound out while the picture went on. 100 ms of buffer rides those out; mpv delays the picture to match.
+MPV_AUDIO = ['--audio-buffer=0.5', '--pipewire-buffer=100']
+
 MPV_INPUT = '''# Home Base remote keys for mpv (a remote's play/pause key reaches mpv as PLAY: every play key toggles)
 ESC quit
 BS quit
@@ -1428,7 +1432,7 @@ def _plex_play(body):
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
     cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
-           *video, '--input-default-bindings=no', f'--input-conf={input_conf}',
+           *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1',
            # Buffer before playing: start (and resume after a stall) only with a few seconds read ahead, rather
@@ -2093,6 +2097,7 @@ def _yt_play(body):
     hdr = streams['headers']
     cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no', '--ytdl=no',
            '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', '--input-default-bindings=no', f'--input-conf={input_conf}',
+           *MPV_AUDIO,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1']
     if hdr.get('User-Agent'):
         cmd.append(f"--user-agent={hdr['User-Agent']}")
