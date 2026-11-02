@@ -2233,15 +2233,18 @@ const REMOTE = {
   // a video or game has the screen: stop the wallpaper, ticker and visualizer drawing behind it
   busy: () => document.body.classList.add('busy'),
   idle: () => document.body.classList.remove('busy'),
-  playpause: () => music.toggle(),
-  play: () => { if (music.index >= 0 && audio.paused) music.toggle(); },
-  pause: () => { if (music.index >= 0 && !audio.paused) music.toggle(); },
-  stop: () => music.stop(),
-  next: () => music.next(),
-  previous: () => music.prev(),
-  forward: () => music.seek(10),
-  rewind: () => music.seek(-10),
+  // Media keys work the music player in the Music app. Elsewhere they only pause music playing in the background:
+  // a paused song never starts again from YouTube or Plex.
+  playpause: () => { if (musicKeys()) music.toggle(); else if (music.isPlaying()) audio.pause(); },
+  play: () => { if (musicKeys() && music.index >= 0 && audio.paused) music.toggle(); },
+  pause: () => { if (music.isPlaying()) audio.pause(); },
+  stop: () => { if (music.isPlaying()) audio.pause(); },
+  next: () => { if (musicKeys()) music.next(); },
+  previous: () => { if (musicKeys()) music.prev(); },
+  forward: () => { if (musicKeys()) music.seek(10); },
+  rewind: () => { if (musicKeys()) music.seek(-10); },
 };
+function musicKeys() { return state.view === 'music' && !document.body.classList.contains('busy'); }
 async function pollEvents() {
   let r;
   try { r = await api(`/api/events?since=${eventSeq ?? 0}`); } catch { return; }

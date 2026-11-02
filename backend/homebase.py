@@ -1036,8 +1036,8 @@ def watch_keys():
                     _log_key(code, open_devs.get(fd))
                 if value == 1 and code == KEY_HOMEPAGE:
                     _home_pressed()
-                elif value == 1 and code in MEDIA_KEYS and not player_running():
-                    _push_event(MEDIA_KEYS[code])   # (while a video plays, mpv takes them itself)
+                elif value == 1 and code in MEDIA_KEYS and not tv_in_use():
+                    _push_event(MEDIA_KEYS[code])   # (while a video or game has the TV, it takes them itself)
                 if code in (KEY_VOLUMEUP, KEY_VOLUMEDOWN) or (code == KEY_MUTE and value == 1):
                     _change_volume(code)
 
@@ -1431,6 +1431,10 @@ def _plex_play(body):
            *video, '--input-default-bindings=no', f'--input-conf={input_conf}',
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1',
+           # Buffer before playing: start (and resume after a stall) only with a few seconds read ahead, rather
+           # than stuttering through the first seconds while Wi-Fi catches up
+           '--cache=yes', '--cache-pause-initial=yes', '--cache-pause-wait=4', '--demuxer-readahead-secs=30',
+           '--demuxer-max-bytes=200MiB',
            f'--start={offset / 1000:.1f}', url]
     if FAKE:
         return {'ok': True, 'title': title}
