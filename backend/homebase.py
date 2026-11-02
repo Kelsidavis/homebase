@@ -207,32 +207,69 @@ def _signal_word(signal):
 _fake = {'ssid': None, 'ssh': False, 'has_password': False, 'country': None}
 
 
+def _route_metrics():
+    """The default-route metric of each network device: the lowest one carries the traffic."""
+    try:
+        out = subprocess.run(['ip', '-j', 'route', 'show', 'default'], capture_output=True, text=True, timeout=5)
+        routes = json.loads(out.stdout or '[]')
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return {}
+    metrics = {}
+    for r in routes:
+        dev, metric = r.get('dev'), r.get('metric', 0)
+        if dev and metric < metrics.get(dev, 1 << 30):
+            metrics[dev] = metric
+    return metrics
+
+
+def _adapter_kind(dev):
+    """'usb' for a plugged-in adapter, 'builtin' for the board's own (on a Pi, SDIO or PCIe)."""
+    return 'usb' if '/usb' in os.path.realpath(f'/sys/class/net/{dev}/device') else 'builtin'
+
+
 def network_status():
     if FAKE:
         on = _fake['ssid'] is not None
         return {'hostname': 'homebase',
                 'wifi': {'device': 'wlan0', 'connected': on, 'ssid': _fake['ssid'], 'signal': 78 if on else None,
-                         'signal_word': 'Strong' if on else None, 'connection': _fake['ssid']},
+                         'signal_word': 'Strong' if on else None, 'connection': _fake['ssid'],
+                         'adapter': 'builtin'},
                 'ethernet': {'connected': False}, 'ip': '192.168.1.40' if on else None, 'prefix': 24 if on else None,
                 'gateway': '192.168.1.1' if on else None, 'dns': ['192.168.1.1'] if on else [],
                 'method': 'auto' if on else None, 'active_connection': _fake['ssid']}
     status = {'hostname': hostname(), 'wifi': {'connected': False}, 'ethernet': {'connected': False},
               'ip': None, 'prefix': None, 'gateway': None, 'dns': [], 'method': None,
               'active_connection': None}
-    primary = None
+    # With two Wi-Fi adapters (say a faster USB one, with the built-in one kept connected as a backup), show the one
+    # carrying the traffic, and the other as the backup.
+    metrics = _route_metrics()
+    wifis, wired = [], []
     for line in _nmcli(['-t', '-f', 'DEVICE,TYPE,STATE,CONNECTION', 'device']).splitlines():
         dev, typ, state, con = (split_terse(line) + ['', '', '', ''])[:4]
         connected = state.startswith('connected') and not state.startswith('connected (externally')
-        if typ == 'wifi' and 'device' not in status['wifi']:
-            status['wifi'] = {'device': dev, 'connected': connected, 'connection': con or None}
-            if connected and primary is None:
-                primary = (dev, con)
-        elif typ == 'ethernet' and 'device' not in status['ethernet']:
-            status['ethernet'] = {'device': dev, 'connected': connected, 'connection': con or None}
-            if connected:
-                primary = (dev, con)
+        entry = {'device': dev, 'connected': connected, 'connection': con or None}
+        if typ == 'wifi':
+            wifis.append(entry)
+        elif typ == 'ethernet':
+            wired.append(entry)
+
+    def in_use(devices):   # the connected device with the cheapest default route, else the first
+        up = [d for d in devices if d['connected']]
+        return min(up, key=lambda d: metrics.get(d['device'], 1 << 30)) if up else (devices[0] if devices else None)
+    wifi, ethernet = in_use(wifis), in_use(wired)
+    if wifi:
+        status['wifi'] = dict(wifi, adapter=_adapter_kind(wifi['device']))
+        backup = next((d for d in wifis if d['connected'] and d is not wifi), None)
+        if backup:
+            status['wifi']['backup'] = {'device': backup['device'], 'adapter': _adapter_kind(backup['device'])}
+    if ethernet:
+        status['ethernet'] = ethernet
+    up = [d for d in (ethernet, wifi) if d and d['connected']]   # (on a tie, the cable wins)
+    best = min(up, key=lambda d: metrics.get(d['device'], 1 << 30)) if up else None
+    primary = (best['device'], best['connection']) if best else None
     if status['wifi'].get('connected'):
-        for line in _nmcli(['-t', '-f', 'IN-USE,SSID,SIGNAL', 'device', 'wifi', 'list', '--rescan', 'no']).splitlines():
+        for line in _nmcli(['-t', '-f', 'IN-USE,SSID,SIGNAL', 'device', 'wifi', 'list', '--rescan', 'no',
+                            'ifname', status['wifi']['device']]).splitlines():
             inuse, ssid, signal = (split_terse(line) + ['', '', ''])[:3]
             if inuse.strip() == '*':
                 sig = int(signal) if signal.isdigit() else None
@@ -285,6 +322,9 @@ def wifi_connect(body):
     if FAKE:
         _fake['ssid'] = ssid
         return {'ok': True}
+    device = network_status()['wifi'].get('device')   # (the adapter in use, when there are two)
+    if device:
+        cmd += ['ifname', device]
     _nmcli(cmd, sudo=True)
     return {'ok': True}
 

@@ -541,7 +541,10 @@ async function renderNetwork(panel) {
   const status = card('Status',
     row('Connection', n.wifi.connected ? h('span', null, h('i', { class: 'dot' }), `Wi-Fi · ${n.wifi.ssid}`)
       : n.ethernet.connected ? h('span', null, h('i', { class: 'dot' }), 'Ethernet') : 'Not connected'),
+    n.wifi.connected ? row('Adapter', n.wifi.adapter === 'usb' ? 'USB Wi-Fi adapter' : 'Built-in Wi-Fi') : null,
     n.wifi.connected ? row('Signal', n.wifi.signal_word || '—') : null,
+    n.wifi.backup ? row('Backup', `${n.wifi.backup.adapter === 'usb' ? 'USB Wi-Fi adapter' : 'Built-in Wi-Fi'}, connected`)
+      : null,
     row('IP address', n.ip || '—'),
     row('Router', n.gateway || '—'),
     row('Name on network', `${n.hostname}.local`),
