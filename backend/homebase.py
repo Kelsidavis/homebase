@@ -34,7 +34,18 @@ SETTINGS_PATH = os.path.join(CONF_DIR, 'settings.json')
 FAKE = os.environ.get('HB_FAKE') == '1'
 HOST = os.environ.get('HB_HOST', '127.0.0.1')
 PORT = int(os.environ.get('HB_PORT', '8099'))
-OUTPUT = os.environ.get('HB_OUTPUT', 'HDMI-A-1')
+def display_output():
+    """The HDMI port the TV is on: HB_OUTPUT if set, else the first connected one (a Pi 4 has two)."""
+    if os.environ.get('HB_OUTPUT'):
+        return os.environ['HB_OUTPUT']
+    for status in sorted(glob.glob('/sys/class/drm/card*-HDMI-A-*/status')):
+        try:
+            with open(status) as f:
+                if f.read().strip() == 'connected':
+                    return os.path.basename(os.path.dirname(status)).split('-', 1)[1]
+        except OSError:
+            pass
+    return 'HDMI-A-1'
 
 # Countries that use Fahrenheit for everyday temperatures.
 FAHRENHEIT_COUNTRIES = {'US', 'LR', 'MM', 'BS', 'BZ', 'KY', 'PW', 'FM', 'MH'}
@@ -571,7 +582,7 @@ def wayland_env():
 
 
 def edid_name():
-    for path in glob.glob(f'/sys/class/drm/card*-{OUTPUT}/edid'):
+    for path in glob.glob(f'/sys/class/drm/card*-{display_output()}/edid'):
         try:
             data = open(path, 'rb').read()
         except OSError:
@@ -597,17 +608,18 @@ def display_info():
         modes = [{'width': 3840, 'height': 2160, 'refresh': r} for r in (30.0, 29.97, 25.0, 24.0, 23.976)]
         modes += [{'width': 1920, 'height': 1080, 'refresh': r} for r in (60.0, 59.94, 50.0, 30.0, 24.0)]
         modes += [{'width': 1280, 'height': 720, 'refresh': r} for r in (60.0, 50.0)]
-        return {'tv': 'Example TV', 'output': OUTPUT, 'connected': True, 'modes': modes,
+        return {'tv': 'Example TV', 'output': 'HDMI-A-1', 'connected': True, 'modes': modes,
                 'current': {'width': 3840, 'height': 2160, 'refresh': 30.0}, 'scale': 2.0,
                 'pending': None}
-    info = {'tv': edid_name(), 'output': OUTPUT, 'connected': False, 'modes': [], 'current': None,
+    output = display_output()
+    info = {'tv': edid_name(), 'output': output, 'connected': False, 'modes': [], 'current': None,
             'scale': None, 'pending': None}
     try:
         outputs = _randr_outputs()
     except ApiError as e:
         info['error'] = str(e)
         return info
-    out = next((o for o in outputs if o.get('name') == OUTPUT), None) or (outputs[0] if outputs else None)
+    out = next((o for o in outputs if o.get('name') == output), None) or (outputs[0] if outputs else None)
     if not out:
         return info
     info['output'] = out.get('name')
@@ -645,7 +657,7 @@ def apply_mode(width, height, refresh, scale):
     if not mode:
         raise ApiError(f'The TV does not offer {width}x{height}', 400)
     arg = f"{mode['width']}x{mode['height']}@{mode['refresh']:.3f}Hz"
-    code, out, err = run(['wlr-randr', '--output', OUTPUT, '--mode', arg, '--scale', f'{scale:g}'],
+    code, out, err = run(['wlr-randr', '--output', display_output(), '--mode', arg, '--scale', f'{scale:g}'],
                          env=wayland_env(), timeout=15)
     if code != 0:
         raise ApiError(f'Could not switch mode: {(err or out).strip()}', 500)
