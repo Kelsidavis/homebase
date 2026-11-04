@@ -1754,6 +1754,88 @@ def _yt_tv_feed(browse_id, ttl):
     return _yt_cached(('account', browse_id), ttl, lambda: _yt_tv_videos(_yt_tv_browse(browse_id)))
 
 
+# The account's home as YouTube's TV app shows it: its shelves (Recommended, Recently uploaded, the topics it has
+# picked for the viewer...), several pages down and each shelf past its first few tiles. The first page alone is a
+# dozen videos that barely change from one visit to the next; the TV app finds new ones by scrolling.
+YT_HOME_PAGES = 3                                    # pages of shelves after the first
+YT_HOME_SKIP = {'shorts', 'continue watching'}       # (no Shorts player; Continue watching is Home Base's own row)
+YT_HOME_TTL = 900
+
+
+def _yt_shelf_title(s):
+    hdr = (s.get('headerRenderer') or {}).get('shelfHeaderRenderer') or {}
+    lockup = (hdr.get('avatarLockup') or {}).get('avatarLockupRenderer') or {}
+    return (_yt_text(lockup.get('title') or {}) or _yt_text(hdr.get('title') or {}) or _yt_text(s.get('title') or {})).strip()
+
+
+def _yt_next_token(o):
+    for c in o.get('continuations') or []:
+        tok = ((c or {}).get('nextContinuationData') or {}).get('continuation')
+        if tok:
+            return tok
+    return None
+
+
+def _yt_tv_home():
+    from concurrent.futures import ThreadPoolExecutor
+    page = _yt_tv_browse('FEwhat_to_watch')
+    sections = next(_yt_find(page, 'sectionListRenderer'), None) or {}
+    shelves = list(sections.get('contents') or [])
+    tok = _yt_next_token(sections)
+    for _ in range(YT_HOME_PAGES):
+        if not tok:
+            break
+        more = _safe(lambda: (_yt_tv_post('browse', {'continuation': tok}).get('continuationContents') or {})
+                     .get('sectionListContinuation') or {}, {})
+        shelves += more.get('contents') or []
+        tok = _yt_next_token(more)
+
+    def fill(sh):
+        s = sh.get('shelfRenderer') or {}
+        title = _yt_shelf_title(s)
+        if not title or title.lower() in YT_HOME_SKIP:
+            return None
+        tiles = (s.get('content') or {}).get('horizontalListRenderer') or {}
+        videos = _yt_tv_videos(tiles.get('items') or [])
+        if videos and _yt_next_token(tiles):
+            more = _safe(lambda: _yt_tv_post('browse', {'continuation': _yt_next_token(tiles)}), {})
+            videos += _yt_tv_videos(((more.get('continuationContents') or {}).get('horizontalListContinuation') or {})
+                                    .get('items') or [])
+        return {'title': title, 'videos': videos}
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        filled = [f for f in pool.map(fill, shelves) if f]
+    if not filled:   # (YouTube changed its layout: at least the videos on the first page)
+        filled = [{'title': 'Recommended', 'videos': _yt_tv_videos(page)}]
+    return filled
+
+
+def _yt_refresh_home():
+    """After a video, fetch the home again: YouTube has had the view and picks differently. The old shelves stay on
+    screen until the new ones are in."""
+    if yt_signed_in():
+        home = _safe(_yt_tv_home, None)
+        if home:
+            with _yt_cache_lock:
+                _yt_cache[('account', 'home')] = (time.time(), home)
+
+
+def _yt_home_shelves():
+    """The account's home shelves without what the viewer has already watched (that is under Continue watching and
+    History), each video once."""
+    home = _yt_cached(('account', 'home'), YT_HOME_TTL, _yt_tv_home)
+    seen = {h['id'] for h in load_settings()['youtube']['history']}
+    out = []
+    for shelf in home:
+        videos = []
+        for v in shelf['videos']:
+            if v['id'] not in seen:
+                seen.add(v['id'])
+                videos.append(v)
+        if len(videos) >= 3:
+            out.append({'title': shelf['title'], 'videos': videos[:20]})
+    return out
+
+
 def _yt_mark_watched(vid):
     """Into the account's watch history, as YouTube's own apps report a view (the player's playback ping)."""
     import random
@@ -1885,7 +1967,8 @@ def _yt_topic_videos(i):
 def yt_row(q):
     rid = (q.get('id') or [''])[0]
     if rid == 'rec':
-        return {'videos': _yt_tv_feed('FEwhat_to_watch', 900)}
+        shelves = _yt_home_shelves()
+        return {'videos': shelves[0]['videos'] if shelves else [], 'shelves': shelves}
     if rid == 'subs':
         return {'videos': _yt_tv_feed('FEsubscriptions', 600)}
     try:
@@ -2024,6 +2107,7 @@ def _watch_yt(proc, video):
         if _player['proc'] is proc:
             _player.update(proc=None, title=None, rating_key=None)
     _push_event('idle')
+    _yt_refresh_home()
 
 
 _yt_streams = {}            # video id -> (time, resolved streams) or a threading.Event while being resolved

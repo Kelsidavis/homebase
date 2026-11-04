@@ -1976,8 +1976,10 @@ const yt = {
           const section = h('section', { class: 'yt-row' }, h('h3', null, title), strip);
           rows.push(section);
           api(`/api/yt/row?id=${id}`).then((t) => {
-            if (!t.videos.length) { section.remove(); return; }
-            strip.replaceChildren(...t.videos.map((v) => this.card(v)));
+            // (the account's recommendations come as YouTube's own shelves, each its own row)
+            const shelves = (t.shelves || [{ title, videos: t.videos }]).filter((s) => s.videos.length);
+            if (!shelves.length) { section.remove(); return; }
+            section.replaceWith(...shelves.map((s) => this.row(s.title, s.videos)));
             this.focusStart();
           }).catch(() => section.remove());
         });
