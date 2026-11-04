@@ -1823,11 +1823,16 @@ const plexv = {
   async renderEpisodes(content, top) {
     const eps = (await music.plex(`/library/metadata/${top.key}/children`)).Metadata || [];
     const list = h('div', { class: 'tracks' }, eps.map((ep) => h('button', {
-      class: 'track', onclick: () => this.open({ kind: 'item', key: ep.ratingKey, title: ep.title }),
+      class: 'track', 'data-key': ep.ratingKey, onclick: () => { top.focus = ep.ratingKey; this.open({ kind: 'item', key: ep.ratingKey, title: ep.title }); },
     }, h('span', { class: 'n' }, ep.index), h('span', null, ep.title,
       h('span', { class: 's' }, [ep.viewOffset ? 'In progress' : ep.viewCount ? 'Watched' : '', (ep.summary || '').slice(0, 110)].filter(Boolean).join(' · '))),
     h('span', { class: 'd' }, fmtTime((ep.duration || 0) / 1000)))));
     content.replaceWith(list);
+    // start on the episode that led here, else the first (after open()'s own focus, which may have found only Back)
+    setTimeout(() => {
+      const want = (top.focus && list.querySelector(`[data-key="${top.focus}"]`)) || list.querySelector('.track');
+      if (want && (!list.contains(document.activeElement) || top.focus)) { want.focus(); want.scrollIntoView({ block: 'center' }); }
+    }, 150);
   },
 
   async renderItem(body, top) {
@@ -1851,7 +1856,13 @@ const plexv = {
     };
     const actions = h('div', { class: 'detail-actions' },
       it.viewOffset ? h('button', { class: 'primary', id: 'plex-resume', onclick: () => play(true) }, `Resume from ${fmtTime(it.viewOffset / 1000)}`) : null,
-      h('button', { class: it.viewOffset ? 'pill' : 'primary', id: 'plex-play', style: it.viewOffset ? { height: '80px' } : null, onclick: () => play(false) }, it.viewOffset ? 'Play from start' : 'Play'));
+      h('button', { class: it.viewOffset ? 'pill' : 'primary', id: 'plex-play', style: it.viewOffset ? { height: '80px' } : null, onclick: () => play(false) }, it.viewOffset ? 'Play from start' : 'Play'),
+      // an episode (from Continue watching, Recently added or Search): on to the rest of its show
+      it.type === 'episode' && it.parentRatingKey ? h('button', { class: 'pill', style: { height: '80px' }, onclick: () => this.open({
+        kind: 'season', key: it.parentRatingKey, focus: it.ratingKey,
+        title: `${it.grandparentTitle || ''} · ${it.parentTitle || `Season ${it.parentIndex}`}` }) }, 'Episodes') : null,
+      it.type === 'episode' && it.grandparentRatingKey ? h('button', { class: 'pill', style: { height: '80px' }, onclick: () => this.open({
+        kind: 'show', key: it.grandparentRatingKey, title: it.grandparentTitle || '' }) }, 'Seasons') : null);
     body.replaceChildren(h('div', { class: 'detail' }, poster,
       h('div', { class: 'detail-info' },
         it.type === 'episode' ? h('div', { class: 'eyebrow' }, it.grandparentTitle) : null,
