@@ -36,12 +36,12 @@ async function api(path, body) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, ms = 3500) {
   const t = $('#toast');
   t.textContent = msg;
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 3500);
+  toastTimer = setTimeout(() => t.classList.remove('show'), ms);
 }
 
 const fmtTime = (s) => {
@@ -2246,6 +2246,8 @@ const REMOTE = {
   // a video or game has the screen: stop the wallpaper, ticker and visualizer drawing behind it
   busy: () => document.body.classList.add('busy'),
   idle: () => document.body.classList.remove('busy'),
+  // a video closed by itself without playing (or with an error): say why, long enough to read
+  'player-error': (ev) => { starting.hide(); toast(ev.message, 12000); },
   // Media keys work the music player in the Music app. Elsewhere they only pause music playing in the background:
   // a paused song never starts again from YouTube or Plex.
   playpause: () => { if (musicKeys()) music.toggle(); else if (music.isPlaying()) audio.pause(); },
@@ -2262,7 +2264,7 @@ async function pollEvents() {
   let r;
   try { r = await api(`/api/events?since=${eventSeq ?? 0}`); } catch { return; }
   if (eventSeq === null) { eventSeq = r.seq; return; }   // (presses from before this page loaded)
-  for (const ev of r.events) if (REMOTE[ev.name]) REMOTE[ev.name]();
+  for (const ev of r.events) if (REMOTE[ev.name]) REMOTE[ev.name](ev);
   eventSeq = r.seq;
 }
 

@@ -377,7 +377,8 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
 
 #toast {
   position: fixed; left: 50%; bottom: 64px; z-index: 60; transform: translate(-50%, 40px); opacity: 0;
-  background: var(--surface-3); color: var(--text); padding: 20px 36px; border-radius: 999px; font-size: 26px;
+  background: var(--surface-3); color: var(--text); padding: 20px 36px; border-radius: 40px; font-size: 26px;
+  width: max-content; max-width: min(1500px, 86vw); text-align: center; line-height: 1.35;   /* (an error may wrap) */
   transition: opacity 200ms ease, transform 200ms ease; pointer-events: none;
 }
 #toast.show { opacity: 1; transform: translate(-50%, 0); }

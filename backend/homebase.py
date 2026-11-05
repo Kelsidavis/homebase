@@ -931,10 +931,13 @@ _events = {'seq': 0, 'items': [], 'page_seen': 0.0}
 _events_lock = threading.Lock()
 
 
-def _push_event(name):
+def _push_event(name, message=None):
     with _events_lock:
         _events['seq'] += 1
-        _events['items'] = (_events['items'] + [{'seq': _events['seq'], 'name': name}])[-20:]
+        ev = {'seq': _events['seq'], 'name': name}
+        if message:
+            ev['message'] = message
+        _events['items'] = (_events['items'] + [ev])[-20:]
 
 
 def events_since(q):
@@ -1332,6 +1335,49 @@ class claim_tv:
         return False
 
 
+# mpv says nothing on the terminal but its errors (no status line, no keys read from it); those (on its stdout) go to
+# a file, so a video that will not play can say why on screen (_mpv_failure)
+MPV_QUIET = ['--no-input-terminal', '--quiet', '--term-osd=no', '--msg-level=all=error']
+
+
+def _mpv_errors_path(env):
+    return os.path.join(env['XDG_RUNTIME_DIR'], 'homebase-mpv-errors.log')
+
+
+def _mpv_popen(cmd, env):
+    with open(_mpv_errors_path(env), 'w') as log:
+        return subprocess.Popen(cmd, env=env, start_new_session=True, stdin=subprocess.DEVNULL,
+                                stdout=log, stderr=subprocess.STDOUT)
+
+
+def _mpv_failure(proc, played, secret=None):
+    """Why mpv closed by itself, for the screen: it exited with an error, or before the video started. None when it
+    played to the end, was quit with the remote or was stopped (SIGTERM: exit code 4)."""
+    code = proc.returncode
+    if code in (4, -15, -9) or (code == 0 and played):   # (-15, -9: ended by SIGTERM, SIGKILL)
+        return None
+    try:
+        with open(_mpv_errors_path(wayland_env()), errors='replace') as f:
+            lines = [ln.strip() for ln in f if ln.strip() and not ln.startswith('Exiting')]
+    except OSError:
+        lines = []
+    why = ' · '.join(lines[-2:])
+    if secret:
+        why = why.replace(secret, '…')
+    if len(why) > 220:
+        why = why[:220] + '…'
+    if why:
+        return why
+    return ('The video closed before it started' if code == 0 else
+            'The player crashed' if code < 0 else f'The player stopped (error {code})')
+
+
+def _player_failed(proc, played, secret=None):
+    why = _mpv_failure(proc, played, secret)
+    if why:
+        _push_event('player-error', f"Couldn't play this: {why}")
+
+
 def player_stop():
     p = _player['proc']
     if p is not None and p.poll() is None:
@@ -1383,12 +1429,13 @@ def _plex_timeline(server, rating_key, state, position_ms, duration_ms):
 
 def _watch_player(proc, server, rating_key, duration_ms):
     """Report progress to Plex every 10 s while mpv plays, then stopped (and watched past 90%)."""
-    last_report = 0.0
+    last_report, played = 0.0, False
     while proc.poll() is None:
         time.sleep(1)
         pos = _mpv_get('time-pos')
         paused = bool(_mpv_get('pause'))
         if pos is not None:
+            played = True
             _player.update(position=float(pos) * 1000, paused=paused)
         dur = _mpv_get('duration')
         if dur:
@@ -1408,6 +1455,34 @@ def _watch_player(proc, server, rating_key, duration_ms):
         if _player['proc'] is proc:
             _player.update(proc=None, title=None, rating_key=None)
     _push_event('idle')
+    _player_failed(proc, played, server['token'])
+
+
+def _plex_hw_video(media, part):
+    """Whether the Pi 4's decoders take this video: HEVC (8 or 10-bit), and H.264 only at 8 bits."""
+    codec = str(media.get('videoCodec') or '').lower()
+    if codec in ('hevc', 'h265'):
+        return True
+    if codec != 'h264':
+        return False
+    depth = next((int(st.get('bitDepth') or 8) for st in part.get('Stream') or [] if st.get('streamType') == 1), 8)
+    return depth <= 8 and '10' not in str(media.get('videoProfile') or '')
+
+
+def _plex_part_url(server, part):
+    """The file's URL, as the server will send it. Some files it sends only as a download: for a whole season it
+    answered a plain request with 500 and ?download=1 with the file. Asks for one byte of each to find out."""
+    base = server['uri'].rstrip('/') + part['key']
+    status = None
+    for url in (base, base + ('&' if '?' in base else '?') + 'download=1'):
+        try:
+            http_get(url, {**plex_headers(server['token']), 'Range': 'bytes=0-0'}, timeout=10)
+            return url
+        except urllib.error.HTTPError as e:
+            status = e.code
+        except (urllib.error.URLError, OSError):
+            return base   # (unreachable just now: let the player try, and say why if it can't)
+    raise ApiError(f'The Plex server would not send this file (error {status})', 502)
 
 
 def plex_play(body):
@@ -1436,12 +1511,12 @@ def _plex_play(body):
     title = item.get('title') or ''
     if item.get('type') == 'episode':
         title = f"{item.get('grandparentTitle', '')} · S{item.get('parentIndex', '?')}E{item.get('index', '?')} · {title}"
-    url = server['uri'].rstrip('/') + part['key']
-    # Raspberry Pi 4: H.264 / MPEG-2 / MPEG-4 decode in hardware through V4L2 and HEVC through DRM; their frames go to
-    # the compositor as dma-bufs with no GPU pass (mpv's GPU output dropped frames on 1080p). Other codecs decode in
-    # software and use the GPU output's fast profile.
-    codec = str(item['Media'][0].get('videoCodec') or '').lower()
-    if codec in ('h264', 'hevc', 'h265', 'mpeg2video', 'mpeg4'):
+    url = _plex_part_url(server, part)
+    # Raspberry Pi 4: 8-bit H.264 decodes in hardware through V4L2 and HEVC through DRM; their frames go to the
+    # compositor as dma-bufs with no GPU pass (mpv's GPU output dropped frames on 1080p). Everything else (10-bit
+    # H.264, MPEG-2, MPEG-4...) decodes in software, whose frames that output cannot show (the picture went, leaving
+    # the sound), so it uses the GPU output's fast profile.
+    if _plex_hw_video(item['Media'][0], part):
         video = ['--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland']
     else:
         video = ['--hwdec=auto-safe', '--vo=gpu', '--profile=fast']
@@ -1450,7 +1525,7 @@ def _plex_play(body):
     os.makedirs(CONF_DIR, exist_ok=True)
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
-    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no',
+    cmd = ['mpv', '--fs', *MPV_QUIET, '--force-window=immediate', '--keep-open=no', '--ytdl=no',
            *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1', *MPV_STREAM,
@@ -1459,7 +1534,7 @@ def _plex_play(body):
         return {'ok': True, 'title': title}
     _push_event('busy')   # the home screen pauses its animations: the GPU is the video's
     with _player_lock:
-        proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = _mpv_popen(cmd, env)
         _player.update(proc=proc, title=title, rating_key=rating_key, position=offset, paused=False,
                        duration=float(item.get('duration') or 0))
     threading.Thread(target=_watch_player, args=(proc, server, rating_key, float(item.get('duration') or 0)),
@@ -2091,11 +2166,12 @@ def _yt_remember(video, position, duration):
 
 def _watch_yt(proc, video):
     """Remember where a YouTube video was left, every 10 s and when it closes."""
-    last = 0.0
+    last, played = 0.0, False
     while proc.poll() is None:
         time.sleep(1)
         pos, dur = _mpv_get('time-pos'), _mpv_get('duration')
         if pos is not None:
+            played = True
             _player.update(position=float(pos) * 1000, paused=bool(_mpv_get('pause')))
         if dur:
             _player['duration'] = float(dur) * 1000
@@ -2107,6 +2183,7 @@ def _watch_yt(proc, video):
         if _player['proc'] is proc:
             _player.update(proc=None, title=None, rating_key=None)
     _push_event('idle')
+    _player_failed(proc, played)
     _yt_refresh_home()
 
 
@@ -2194,7 +2271,7 @@ def _yt_play(body):
         return {'ok': True, 'title': title}
     streams = _yt_resolve(vid)
     hdr = streams['headers']
-    cmd = ['mpv', '--fs', '--no-terminal', '--force-window=immediate', '--keep-open=no', '--ytdl=no',
+    cmd = ['mpv', '--fs', *MPV_QUIET, '--force-window=immediate', '--keep-open=no', '--ytdl=no',
            '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', '--input-default-bindings=no', f'--input-conf={input_conf}',
            *MPV_AUDIO, *MPV_STREAM,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}', '--osd-level=1']
@@ -2214,7 +2291,7 @@ def _yt_play(body):
     env['PATH'] = VENV_BIN + os.pathsep + env.get('PATH', '')
     _push_event('busy')
     with _player_lock:
-        proc = subprocess.Popen(cmd, env=env, start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = _mpv_popen(cmd, env)
         _player.update(proc=proc, title=title, rating_key=None, position=start * 1000, paused=False, duration=0)
     threading.Thread(target=_watch_yt, args=(proc, video), daemon=True).start()
     if yt_signed_in():   # (into the account's watch history, as YouTube's own apps do)
