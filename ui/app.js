@@ -1850,6 +1850,7 @@ const plexv = {
     const meta = [it.type === 'episode' ? `S${it.parentIndex}·E${it.index}` : null, it.year, mins ? `${Math.floor(mins / 60) ? `${Math.floor(mins / 60)} h ` : ''}${mins % 60} min` : null,
       it.contentRating, it.Media && it.Media[0] && it.Media[0].videoResolution ? `${String(it.Media[0].videoResolution).toUpperCase()}` : null].filter(Boolean).join(' · ');
     const play = async (resume) => {
+      upNext.chain = 0;
       starting.show(it.title, src, null);
       try { await api('/api/plex/play', { key: it.ratingKey, resume }); starting.untilPlaying(); this.watchPlayer(); }
       catch (err) { starting.hide(); toast(err.message); }
@@ -1882,6 +1883,56 @@ const plexv = {
       try { p = await api('/api/player'); } catch { return; }
       if (!p.playing) { clearInterval(this.playerTimer); if (state.view === 'plex') this.render(); }
     }, 2000);
+  },
+};
+
+// An episode played to its end (or Next episode taken in its credits): the next one, in 10 s unless Cancel or Back.
+// After three in a row with nobody pressing anything it waits for Play now, rather than playing on all night.
+const upNext = {
+  timer: null,
+  chain: 0,
+  show(n) {
+    if (!n || !n.key) return;
+    if (n.pressed) this.chain = 0;
+    clearInterval(this.timer);
+    const auto = this.chain < 3;
+    let left = 10;
+    const count = h('p', { class: 'up-next-count' }, auto ? `Playing in ${left} s` : 'Still watching?');
+    const img = h('div', { class: 'up-next-img' });
+    const src = music.thumb(n.thumb, 480);
+    if (src) img.style.backgroundImage = `url("${src}")`;
+    openDialog({
+      title: 'Up next',
+      body: h('div', { class: 'up-next' }, img, h('div', null,
+        h('div', { class: 'eyebrow' }, n.show),
+        h('h3', null, n.title),
+        h('div', { class: 'detail-meta' }, `S${n.season}·E${n.episode}`),
+        count)),
+      actions: [{ label: 'Cancel', onClick: closeDialog },
+        { label: 'Play now', primary: true, onClick: () => { this.chain = 0; closeDialog(); this.play(n); } }],
+      onClose: () => clearInterval(this.timer),
+    });
+    if (!auto) return;
+    this.timer = setInterval(() => {
+      left -= 1;
+      count.textContent = `Playing in ${left} s`;
+      if (left > 0) return;
+      clearInterval(this.timer);
+      this.chain += 1;
+      closeDialog();
+      this.play(n);
+    }, 1000);
+  },
+  async play(n) {
+    if (state.view === 'plex') {   // (the details behind the player become the new episode's)
+      const top = plexv.stack[plexv.stack.length - 1];
+      const entry = { kind: 'item', key: n.key, title: n.title };
+      if (top && top.kind === 'item') plexv.stack[plexv.stack.length - 1] = entry; else plexv.stack.push(entry);
+      plexv.render();
+    }
+    starting.show(n.title, music.thumb(n.thumb, 600), null);
+    try { await api('/api/plex/play', { key: n.key, resume: true }); starting.untilPlaying(); plexv.watchPlayer(); }
+    catch (err) { starting.hide(); toast(err.message); }
   },
 };
 
@@ -2248,6 +2299,7 @@ const REMOTE = {
   idle: () => document.body.classList.remove('busy'),
   // a video closed by itself without playing (or with an error): say why, long enough to read
   'player-error': (ev) => { starting.hide(); toast(ev.message, 12000); },
+  'up-next': (ev) => upNext.show(ev.data),
   // Media keys work the music player in the Music app. Elsewhere they only pause music playing in the background:
   // a paused song never starts again from YouTube or Plex.
   playpause: () => { if (musicKeys()) music.toggle(); else if (music.isPlaying()) audio.pause(); },

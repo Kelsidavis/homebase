@@ -931,12 +931,14 @@ _events = {'seq': 0, 'items': [], 'page_seen': 0.0}
 _events_lock = threading.Lock()
 
 
-def _push_event(name, message=None):
+def _push_event(name, message=None, data=None):
     with _events_lock:
         _events['seq'] += 1
         ev = {'seq': _events['seq'], 'name': name}
         if message:
             ev['message'] = message
+        if data:
+            ev['data'] = data
         _events['items'] = (_events['items'] + [ev])[-20:]
 
 
@@ -1352,9 +1354,10 @@ def _mpv_popen(cmd, env):
 
 def _mpv_failure(proc, played, secret=None):
     """Why mpv closed by itself, for the screen: it exited with an error, or before the video started. None when it
-    played to the end, was quit with the remote or was stopped (SIGTERM: exit code 4)."""
+    played to the end, was quit with the remote, was stopped (SIGTERM: exit code 4) or skipped its closing credits
+    (mpv-skip.lua: 10)."""
     code = proc.returncode
-    if code in (4, -15, -9) or (code == 0 and played):   # (-15, -9: ended by SIGTERM, SIGKILL)
+    if code in (4, 10, -15, -9) or (code == 0 and played):   # (-15, -9: ended by SIGTERM, SIGKILL)
         return None
     try:
         with open(_mpv_errors_path(wayland_env()), errors='replace') as f:
@@ -1427,8 +1430,9 @@ def _plex_timeline(server, rating_key, state, position_ms, duration_ms):
         pass
 
 
-def _watch_player(proc, server, rating_key, duration_ms):
-    """Report progress to Plex every 10 s while mpv plays, then stopped (and watched past 90%)."""
+def _watch_player(proc, server, rating_key, duration_ms, credits_ms=None, up_next=None):
+    """Report progress to Plex every 10 s while mpv plays, then stopped; watched past 90% or into the closing
+    credits. Played to the end (or Next episode in the credits), the next episode is offered on screen."""
     last_report, played = 0.0, False
     while proc.poll() is None:
         time.sleep(1)
@@ -1444,8 +1448,13 @@ def _watch_player(proc, server, rating_key, duration_ms):
         if time.time() - last_report >= 10:
             last_report = time.time()
             _plex_timeline(server, rating_key, 'paused' if paused else 'playing', _player['position'], duration_ms)
+    finished = proc.returncode == 10 or (proc.returncode == 0 and duration_ms
+                                          and duration_ms - _player['position'] < 10000)
+    if finished:
+        _player['position'] = duration_ms or _player['position']
     _plex_timeline(server, rating_key, 'stopped', _player['position'], duration_ms)
-    if duration_ms and _player['position'] >= 0.9 * duration_ms:
+    pos = _player['position']
+    if duration_ms and (pos >= 0.9 * duration_ms or (credits_ms and pos >= credits_ms)):
         q = urllib.parse.urlencode({'key': rating_key, 'identifier': 'com.plexapp.plugins.library'})
         try:
             http_get(f"{server['uri'].rstrip('/')}/:/scrobble?{q}", plex_headers(server['token']), timeout=5)
@@ -1456,6 +1465,8 @@ def _watch_player(proc, server, rating_key, duration_ms):
             _player.update(proc=None, title=None, rating_key=None)
     _push_event('idle')
     _player_failed(proc, played, server['token'])
+    if finished and up_next:
+        _push_event('up-next', data=dict(up_next, pressed=proc.returncode == 10))
 
 
 def _plex_hw_video(media, part):
@@ -1467,6 +1478,48 @@ def _plex_hw_video(media, part):
         return False
     depth = next((int(st.get('bitDepth') or 8) for st in part.get('Stream') or [] if st.get('streamType') == 1), 8)
     return depth <= 8 and '10' not in str(media.get('videoProfile') or '')
+
+
+def _plex_next_episode(server, item):
+    """The episode after this one: next in its season, else the first of the next season."""
+    if item.get('type') != 'episode' or not item.get('parentRatingKey') or not item.get('grandparentRatingKey'):
+        return None
+    base, hdr = server['uri'].rstrip('/'), plex_headers(server['token'])
+
+    def children(key):
+        return http_json(f'{base}/library/metadata/{key}/children', hdr).get('MediaContainer', {}).get('Metadata') or []
+    after = [e for e in children(item['parentRatingKey']) if (e.get('index') or 0) > (item.get('index') or 0)]
+    if not after:
+        seasons = sorted((x for x in children(item['grandparentRatingKey'])
+                          if (x.get('index') or 0) > (item.get('parentIndex') or 0)), key=lambda x: x.get('index') or 0)
+        after = children(seasons[0]['ratingKey']) if seasons else []
+    if not after:
+        return None
+    nxt = min(after, key=lambda e: e.get('index') or 0)
+    return {'key': nxt['ratingKey'], 'title': nxt.get('title') or '', 'season': nxt.get('parentIndex'),
+            'episode': nxt.get('index'), 'show': nxt.get('grandparentTitle') or item.get('grandparentTitle') or '',
+            'thumb': nxt.get('thumb') or nxt.get('grandparentThumb')}
+
+
+MPV_SKIP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mpv-skip.lua')
+
+
+def _plex_markers(item):
+    """The server's intro and credits markers for mpv-skip.lua ("intro 31.2 121.9;credits 1408.0 1420.0 final"), and
+    where the closing credits start (ms)."""
+    specs, credits = [], None
+    for m in item.get('Marker') or []:
+        if m.get('type') not in ('intro', 'credits'):
+            continue
+        try:
+            start, end = int(m['startTimeOffset']), int(m['endTimeOffset'])
+        except (KeyError, TypeError, ValueError):
+            continue
+        final = m.get('type') == 'credits' and bool(m.get('final'))
+        if final:
+            credits = start
+        specs.append(f"{m['type']} {start / 1000:.3f} {end / 1000:.3f}{' final' if final else ''}")
+    return ';'.join(specs), credits
 
 
 def _plex_part_url(server, part):
@@ -1498,7 +1551,8 @@ def _plex_play(body):
     if player_running():
         raise ApiError('Something is already playing', 409)
     server = plex_server()
-    meta = http_json(f"{server['uri'].rstrip('/')}/library/metadata/{rating_key}", plex_headers(server['token']))
+    meta = http_json(f"{server['uri'].rstrip('/')}/library/metadata/{rating_key}?includeMarkers=1",
+                     plex_headers(server['token']))
     items = (meta.get('MediaContainer') or {}).get('Metadata') or []
     if not items:
         raise ApiError('Not found on the Plex server', 404)
@@ -1529,7 +1583,13 @@ def _plex_play(body):
            *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO,
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1', *MPV_STREAM,
-           f'--start={offset / 1000:.1f}', url]
+           f'--start={offset / 1000:.1f}']
+    markers, credits_ms = _plex_markers(item)
+    up_next = _safe(lambda: _plex_next_episode(server, item), None)
+    if markers and os.path.exists(MPV_SKIP_SCRIPT):
+        cmd += [f'--script={MPV_SKIP_SCRIPT}',
+                f"--script-opts=homebase-markers={markers},homebase-next={1 if up_next else 0}"]
+    cmd.append(url)
     if FAKE:
         return {'ok': True, 'title': title}
     _push_event('busy')   # the home screen pauses its animations: the GPU is the video's
@@ -1537,7 +1597,8 @@ def _plex_play(body):
         proc = _mpv_popen(cmd, env)
         _player.update(proc=proc, title=title, rating_key=rating_key, position=offset, paused=False,
                        duration=float(item.get('duration') or 0))
-    threading.Thread(target=_watch_player, args=(proc, server, rating_key, float(item.get('duration') or 0)),
+    threading.Thread(target=_watch_player, args=(proc, server, rating_key, float(item.get('duration') or 0),
+                                                 credits_ms, up_next),
                      daemon=True).start()
     return {'ok': True, 'title': title}
 
@@ -2310,7 +2371,8 @@ def _yt_update_tools():
 
 
 def player_status():
-    return {'playing': player_running(), 'title': _player['title'], 'position': _player['position'],
+    # (playing until the watcher has told Plex how it ended: a screen redrawn sooner shows the old resume point)
+    return {'playing': player_running() or _player['proc'] is not None, 'title': _player['title'], 'position': _player['position'],
             'duration': _player['duration'], 'paused': _player['paused']}
 
 # ---------------------------------------------------------------- http

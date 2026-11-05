@@ -373,6 +373,11 @@ body[data-wallpaper="art"] #wallpaper .ambient { opacity: 0.45; }
 .dialog h2 { font-size: 44px; font-weight: 600; }
 .dialog p { font-size: 28px; line-height: 1.45; color: var(--text-2); }
 .dialog .actions { display: flex; justify-content: flex-end; gap: 20px; margin-top: 12px; }
+.up-next { display: flex; gap: 36px; align-items: center; }
+.up-next-img { width: 400px; aspect-ratio: 16 / 9; flex-shrink: 0; border-radius: 18px; background: var(--surface-3) center/cover no-repeat; }
+.up-next .eyebrow { font-size: 24px; letter-spacing: 1px; color: var(--accent); }
+.up-next h3 { font-size: 36px; font-weight: 600; margin: 6px 0 8px; }
+.dialog .up-next-count { color: var(--accent); font-weight: 600; margin-top: 14px; }
 .dialog .big-code { font-size: 120px; font-weight: 700; letter-spacing: 16px; text-align: center; color: var(--accent); }
 
 #toast {
