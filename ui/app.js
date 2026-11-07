@@ -2157,7 +2157,7 @@ const yt = {
     const thumb = h('div', { class: 'yt-hero' });
     thumb.style.backgroundImage = `url("${v.thumb.replace('hqdefault', 'maxresdefault')}"), url("${v.thumb}")`;
     const meta = [v.duration ? fmtTime(v.duration) : null, v.views ? `${Number(v.views).toLocaleString('en-US')} views` : null, ytAgo(v.published)].filter(Boolean).join(' · ');
-    body.replaceChildren(h('div', { class: 'detail' }, thumb,
+    body.replaceChildren(h('div', { class: 'lib-tabs' }, this.backButton()), h('div', { class: 'detail' }, thumb,
       h('div', { class: 'detail-info' },
         h('div', { class: 'eyebrow' }, v.channel || 'YouTube'),
         h('h2', { style: { fontSize: '56px' } }, v.title),
@@ -2173,6 +2173,11 @@ const yt = {
     if (!owner || !owner.channel_id || !actions || !actions.isConnected) return;
     if (!v.channel_id) { v.channel_id = owner.channel_id; actions.append(this.channelButton(owner.channel_id)); }
     actions.append(this.subscribeButton({ id: owner.channel_id, name: v.channel, subscribed: owner.subscribed }));
+  },
+
+  // A video or channel page: a step back to where it was opened from (the header's Home leaves YouTube altogether)
+  backButton() {
+    return h('button', { class: 'pill', onclick: () => this.back() }, h('span', { html: '<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>' }), 'Back');
   },
 
   channelButton(id) {
@@ -2195,15 +2200,15 @@ const yt = {
   },
 
   async renderChannel(body, id) {
-    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, h('div', { class: 'yt-avatar skel' }), h('div', { class: 'skel skel-line', style: { width: '320px', height: '44px' } })),
+    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, this.backButton(), h('div', { class: 'yt-avatar skel' }), h('div', { class: 'skel skel-line', style: { width: '320px', height: '44px' } })),
       h('div', { class: 'grid videos' }, ...skeletonCards(8)));
     let c;
-    try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'empty' }, err.message)); return; }
+    try { c = await api(`/api/yt/channel?id=${encodeURIComponent(id)}`); } catch (err) { body.replaceChildren(h('div', { class: 'lib-tabs' }, this.backButton()), h('div', { class: 'empty' }, err.message)); focusIn('#youtube-body'); return; }
     const sub = this.subscribeButton(c);
     const avatar = h('div', { class: 'yt-avatar' });
     if (c.avatar) avatar.style.backgroundImage = `url("${c.avatar}")`;
     const grid = h('div', { class: 'grid videos' });
-    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, avatar, h('h2', { style: { fontSize: '44px', fontWeight: 600 } }, c.name), sub), grid);
+    body.replaceChildren(h('div', { class: 'lib-tabs', style: { gap: '24px' } }, this.backButton(), avatar, h('h2', { style: { fontSize: '44px', fontWeight: 600 } }, c.name), sub), grid);
     this.fillVideos(grid, c.videos);
   },
 };
