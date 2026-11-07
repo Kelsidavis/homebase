@@ -51,6 +51,17 @@ def display_output():
 FAHRENHEIT_COUNTRIES = {'US', 'LR', 'MM', 'BS', 'BZ', 'KY', 'PW', 'FM', 'MH'}
 # Countries where a 12-hour clock is the everyday norm.
 TWELVE_HOUR_COUNTRIES = {'US', 'CA', 'AU', 'NZ', 'PH', 'IN', 'PK', 'BD', 'EG', 'SA', 'CO', 'MY'}
+# The languages a country's viewers most likely want to hear, first choice first (mpv's --alang).
+COUNTRY_LANGUAGES = {cc: langs for langs, ccs in {
+    'en': 'US GB IE AU NZ ZA NG GH KE UG JM TT BS BB PH', 'en,fr': 'CA', 'en,zh': 'SG', 'hi,en': 'IN', 'ur,en': 'PK', 'ms,en': 'MY',
+    'de': 'DE AT LI', 'de,fr,it': 'CH', 'fr,de': 'LU', 'nl,fr,de': 'BE', 'nl': 'NL',
+    'fr': 'FR MC SN CI CM ML', 'it': 'IT SM', 'pt': 'PT BR AO MZ',
+    'es': 'ES MX AR CL CO PE VE EC GT CU BO DO HN PY SV NI CR PA UY PR',
+    'sv': 'SE', 'no': 'NO', 'da': 'DK', 'fi,sv': 'FI', 'is': 'IS', 'pl': 'PL', 'cs': 'CZ', 'sk': 'SK', 'hu': 'HU',
+    'ro': 'RO MD', 'bg': 'BG', 'el': 'GR CY', 'tr': 'TR', 'ru': 'RU BY KZ', 'uk': 'UA', 'hr': 'HR', 'sr': 'RS', 'sl': 'SI',
+    'lt': 'LT', 'lv': 'LV', 'et': 'EE', 'ar': 'SA AE EG MA DZ TN JO LB KW QA BH OM IQ', 'he': 'IL', 'fa': 'IR',
+    'ja': 'JP', 'ko': 'KR', 'zh': 'CN TW', 'zh,en': 'HK', 'th': 'TH', 'vi': 'VN', 'id': 'ID',
+}.items() for cc in ccs.split()}
 
 THEMES = {'midnight', 'oled', 'ember', 'daylight', 'ocean', 'forest', 'arctic', 'synthwave',
           'sakura', 'sunset', 'royal', 'solar', 'terminal', 'mono'}
@@ -1504,6 +1515,15 @@ def _plex_next_episode(server, item):
 MPV_SKIP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mpv-skip.lua')
 
 
+def _plex_audio_args():
+    """The audio track in the language of the viewer's country where a file has one, dub or not: left alone, mpv takes
+    the track the file flags as default, which on dual-audio anime is often the Japanese. Files without one, and
+    countries not listed, still play what the file flags."""
+    st = load_settings()
+    langs = COUNTRY_LANGUAGES.get((st['country'] or st['weather'].get('country') or '').upper())
+    return [f'--alang={langs}'] if langs else []
+
+
 def _plex_markers(item):
     """The server's intro and credits markers for mpv-skip.lua ("intro 31.2 121.9;credits 1408.0 1420.0 final"), and
     where the closing credits start (ms)."""
@@ -1580,7 +1600,7 @@ def _plex_play(body):
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
     cmd = ['mpv', '--fs', *MPV_QUIET, '--force-window=immediate', '--keep-open=no', '--ytdl=no',
-           *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO,
+           *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO, *_plex_audio_args(),
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1', *MPV_STREAM,
            f'--start={offset / 1000:.1f}']
