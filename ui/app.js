@@ -1997,7 +1997,7 @@ const yt = {
     const top = this.stack[this.stack.length - 1];
     if (top && top.kind === 'video') return this.renderVideo(body, top.video);
     if (top && top.kind === 'channel') return this.renderChannel(body, top.id);
-    const tabs = [['home', 'Home'], ['search', 'Search'], ['subs', 'Subscriptions'], ['history', 'History']];
+    const tabs = [['home', 'For you'], ['search', 'Search'], ['subs', 'Subscriptions'], ['history', 'History']];   // (the back button above says Home)
     const onTab = document.activeElement && document.activeElement.dataset.ytTab;
     const bar = h('div', { class: 'lib-tabs' }, tabs.map(([id, label]) => h('button', {
       class: `pill${this.tab === id ? ' selected' : ''}`, 'data-yt-tab': id, onclick: () => { this.tab = id; this.render(); },
