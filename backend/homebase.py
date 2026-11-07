@@ -1627,6 +1627,18 @@ def _ytdlp():
     return p if os.path.exists(p) else 'yt-dlp'
 
 
+def _ytdlp_run(args, timeout):
+    """yt-dlp, niced: a playing video's sound and picture come first. IPv4 first: YouTube's "confirm you're not a bot"
+    check can hold one address family and not the other, and yt-dlp, which never carries the account's sign-in, would
+    otherwise always take IPv6. Then whatever the network has, for IPv6-only networks. (The stream URLs it returns work
+    over both, so mpv needs no such care.)"""
+    cmd = ['nice', '-n', '10', _ytdlp()]
+    result = run([*cmd, '--force-ipv4', *args], timeout=timeout, env=_yt_env())
+    if result[0] not in (0, 124):   # (not after a timeout: the wait would double)
+        result = run([*cmd, *args], timeout=timeout, env=_yt_env())
+    return result
+
+
 def _yt_cached(key, ttl, fn):
     with _yt_cache_lock:
         hit = _yt_cache.get(key)
@@ -1993,9 +2005,7 @@ def _yt_mark_watched(vid):
 
 
 def _ytdlp_json(args, timeout=40):
-    # (niced, like all of Home Base's yt-dlp runs: a playing video's sound and picture come first)
-    code, out, err = run(['nice', '-n', '10', _ytdlp(), '--flat-playlist', '-J', '--no-warnings', *args],
-                         timeout=timeout, env=_yt_env())
+    code, out, err = _ytdlp_run(['--flat-playlist', '-J', '--no-warnings', *args], timeout)
     if code != 0:
         raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
     return json.loads(out)
@@ -2273,8 +2283,8 @@ def _yt_resolve(vid):
             break
         pending.wait(90)
     try:
-        code, out, err = run(['nice', '-n', '10', _ytdlp(), '-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
-                              f'https://www.youtube.com/watch?v={vid}'], timeout=90, env=_yt_env())
+        code, out, err = _ytdlp_run(['-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
+                                     f'https://www.youtube.com/watch?v={vid}'], 90)
         if code != 0:
             raise ApiError(f'YouTube: {(err or out).strip().splitlines()[-1] if (err or out).strip() else "failed"}', 502)
         d = json.loads(out)
