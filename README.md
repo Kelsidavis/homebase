@@ -19,7 +19,9 @@ remote with a trackpad, though any USB keyboard and mouse work.
 - **Plex movies and shows**, built in: Continue Watching, Recently Added and
   each library, with seasons and episodes. Videos play full screen in mpv
   with the Pi's hardware decoder, and progress is reported back to Plex
-  (resume anywhere; watched past 90%).
+  (resume anywhere; watched past 90%). Audio prefers your country's language.
+  Subtitles start off for matching audio and use your primary language for
+  foreign audio when available; press `s` to change them during playback.
 - **Music** from your Plex server: browse albums, artists and playlists, with
   Spectrum, Mirror and Wave visualizers driven by the real audio, and a full
   screen visualizer mode.
@@ -113,6 +115,11 @@ HB_FAKE=1 HB_CONF_DIR=/tmp/homebase-dev python3 backend/homebase.py
 ```
 
 Then open http://127.0.0.1:8099 in a browser.
+
+Run the Plex UI regression tests with `node --test tests/*.test.mjs` (Node.js
+18 or later; no packages to install). Check subtitle selection with
+`python3 -m unittest discover -s tests -p 'test_*.py'`; these playback tests
+require `mpv` and `ffmpeg` and run without opening a window.
 
 ## Layout
 

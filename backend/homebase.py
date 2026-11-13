@@ -1515,13 +1515,15 @@ def _plex_next_episode(server, item):
 MPV_SKIP_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'mpv-skip.lua')
 
 
-def _plex_audio_args():
-    """The audio track in the language of the viewer's country where a file has one, dub or not: left alone, mpv takes
-    the track the file flags as default, which on dual-audio anime is often the Japanese. Files without one, and
-    countries not listed, still play what the file flags."""
+def _plex_language_args():
+    """Prefer local audio, with primary-language subtitles only for foreign audio. Manual subtitle selection still
+    works with the remote's s key. Without a known language preference, subtitles start off."""
     st = load_settings()
     langs = COUNTRY_LANGUAGES.get((st['country'] or st['weather'].get('country') or '').upper())
-    return [f'--alang={langs}'] if langs else []
+    if not langs:
+        return ['--sid=no']
+    return [f'--alang={langs}', f"--slang={langs.split(',')[0]}", '--sid=auto',
+            '--subs-with-matching-audio=no', '--subs-fallback=no', '--subs-fallback-forced=no']
 
 
 def _plex_markers(item):
@@ -1600,7 +1602,7 @@ def _plex_play(body):
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
     cmd = ['mpv', '--fs', *MPV_QUIET, '--force-window=immediate', '--keep-open=no', '--ytdl=no',
-           *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO, *_plex_audio_args(),
+           *video, '--input-default-bindings=no', f'--input-conf={input_conf}', *MPV_AUDIO, *_plex_language_args(),
            f'--input-ipc-server={_mpv_socket()}', f'--title={title}', f'--force-media-title={title}',
            f"--http-header-fields=X-Plex-Token: {server['token']}", '--osd-level=1', *MPV_STREAM,
            f'--start={offset / 1000:.1f}']

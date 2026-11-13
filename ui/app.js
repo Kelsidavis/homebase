@@ -1872,7 +1872,12 @@ const plexv = {
         it.tagline ? h('p', { class: 'detail-tagline' }, it.tagline) : null,
         h('p', { class: 'detail-summary' }, it.summary || ''),
         actions)));
-    setTimeout(() => { const b = $('#plex-resume') || $('#plex-play'); if (b) b.focus(); }, 60);
+    setTimeout(() => {
+      // Playback finishing can refresh this page behind Up next. Keep OK on the dialog's Play now button.
+      if (state.dialogOpen || state.view !== 'plex') return;
+      const b = $('#plex-resume') || $('#plex-play');
+      if (b) b.focus();
+    }, 60);
   },
 
   // Refresh the details (resume point, watched) once the player closes.
