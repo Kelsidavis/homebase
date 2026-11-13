@@ -2375,7 +2375,11 @@ def _yt_play(body):
             cmd.append(f'--http-header-fields-append={k}: {hdr[k]}')
     if streams['audio']:
         cmd.append(f"--audio-file={streams['audio']}")
-    if not streams['live']:
+    if streams['live']:
+        # YouTube's live HLS connections stall when FFmpeg reuses or prefetches them, corrupting audio and
+        # leaving video behind. Open a fresh connection for each segment in both the video and audio demuxers.
+        cmd.append('--demuxer-lavf-o=http_persistent=0,http_multiple=0')
+    else:
         cmd.append(f'--start={start:.1f}')
     cmd.append(streams['video'])
     if player_running():   # (something started while the streams were looked up)
