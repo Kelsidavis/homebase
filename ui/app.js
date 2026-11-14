@@ -410,7 +410,7 @@ const ACTIONS = {
   youtube: () => show('youtube'),
   'news-live': async () => {
     starting.show('CBS News 24/7');
-    try { await api('/api/yt/news-live', {}); starting.untilPlaying(); plexv.watchPlayer(); }
+    try { await api('/api/news/live', {}); starting.untilPlaying(); plexv.watchPlayer(); }
     catch (err) { starting.hide(); toast(err.message); }
   },
   plex: () => show('plex'),

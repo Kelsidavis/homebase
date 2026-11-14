@@ -10,7 +10,10 @@ remote with a trackpad, though any USB keyboard and mouse work.
 ## Features
 
 - **Home screen**: clock, weather for your location, and large tiles for
-  YouTube, News Live (CBS News 24/7 on YouTube), Plex, Music and casting.
+  YouTube, Live News (CBS News 24/7), Plex, Music and casting.
+- **Live News**: CBS's national 24/7 stream, played directly in mpv from
+  [CBS News](https://www.cbsnews.com/live/), including when its YouTube channel
+  is not broadcasting.
 - **YouTube**, built in: your followed channels' new videos, search, channel
   pages and history with resume points, played full screen in mpv from
   YouTube's own H.264 streams with the hardware decoder (up to 1080p). There
@@ -46,6 +49,7 @@ remote with a trackpad, though any USB keyboard and mouse work.
 - AP headlines are fetched through Google News' public RSS feed, restricted to
   apnews.com.
 - The Plex token stays on the Pi; the browser only talks to the local backend.
+- Live News connects directly to CBS's national stream; it does not use your location.
 - SSH is off by default and can only be turned on after setting a password.
 
 ## Requirements

@@ -2335,8 +2335,8 @@ def _yt_remember(video, position, duration):
     update_settings(upd)
 
 
-def _watch_yt(proc, video):
-    """Remember where a YouTube video was left, every 10 s and when it closes."""
+def _watch_video(proc, video=None):
+    """Track playback, saving resume points only for YouTube videos."""
     last, played = 0.0, False
     while proc.poll() is None:
         time.sleep(1)
@@ -2346,16 +2346,18 @@ def _watch_yt(proc, video):
             _player.update(position=float(pos) * 1000, paused=bool(_mpv_get('pause')))
         if dur:
             _player['duration'] = float(dur) * 1000
-        if time.time() - last >= 10 and pos is not None:
+        if video and time.time() - last >= 10 and pos is not None:
             last = time.time()
             _yt_remember(video, float(pos), float(dur or 0))
-    _yt_remember(video, _player['position'] / 1000, _player['duration'] / 1000)
+    if video:
+        _yt_remember(video, _player['position'] / 1000, _player['duration'] / 1000)
     with _player_lock:
         if _player['proc'] is proc:
             _player.update(proc=None, title=None, rating_key=None)
     _push_event('idle')
     _player_failed(proc, played)
-    _yt_refresh_home()
+    if video:
+        _yt_refresh_home()
 
 
 _yt_streams = {}            # video id -> (time, resolved streams) or a threading.Event while being resolved
@@ -2416,16 +2418,32 @@ def yt_prepare(body):
     return {'ok': True}
 
 
-def yt_news_live(body):
-    # Resolve the channel each time: CBS replaces its live video, so a saved video id goes stale.
-    with claim_tv('News Live'):
-        data = _ytdlp_json(['--playlist-items', '1-20', 'https://www.youtube.com/@CBSNews/streams'])
-        live = [e for e in data.get('entries') or []
-                if e.get('live_status') == 'is_live' and _yt_valid_id(e.get('id') or '')]
-        if not live:
-            raise ApiError('CBS News is not live on YouTube right now. Please try again later.', 503)
-        entry = next((e for e in live if 'cbs news 24/7' in (e.get('title') or '').lower()), live[0])
-        return _yt_play({**_yt_video(entry), 'resume': False})
+def _news_live_resolve():
+    # CBS's national stream stays live when its YouTube channel has only replays. Resolve fresh signed URLs each time.
+    code, out, err = _ytdlp_run(['-J', '--no-warnings', '--no-playlist', '-f', YT_FORMAT,
+                                'https://www.cbsnews.com/live/'], 45)
+    if code != 0:
+        raise ApiError('Could not load CBS News 24/7. Please try again later.', 503)
+    try:
+        data = json.loads(out)
+        if data.get('live_status') != 'is_live' and data.get('is_live') is not True:
+            raise ValueError('Not a live broadcast')
+        formats = data.get('requested_formats') or [data]
+        video = next((f for f in formats if f.get('vcodec') not in (None, 'none')), formats[0])
+        audio = next((f for f in formats if f is not video), None)
+        return {'video': video['url'], 'audio': audio['url'] if audio else None,
+                'headers': video.get('http_headers') or {}, 'live': True}
+    except (ValueError, KeyError, IndexError, TypeError):
+        raise ApiError('CBS News 24/7 is unavailable right now. Please try again later.', 503)
+
+
+def news_live(body):
+    with claim_tv('Live News'):
+        title = 'CBS News 24/7'
+        if not FAKE:
+            proc = _play_stream(_news_live_resolve(), title)
+            threading.Thread(target=_watch_video, args=(proc,), daemon=True).start()
+        return {'ok': True, 'title': title}
 
 
 def yt_play(body):
@@ -2446,13 +2464,20 @@ def _yt_play(body):
         if h and h.get('duration') and 30 < h.get('position', 0) < 0.95 * h['duration']:
             start = float(h['position'])
     title = str(video.get('title') or 'YouTube')
+    if FAKE:
+        return {'ok': True, 'title': title}
+    proc = _play_stream(_yt_resolve(vid), title, start)
+    threading.Thread(target=_watch_video, args=(proc, video), daemon=True).start()
+    if yt_signed_in():   # (into the account's watch history, as YouTube's own apps do)
+        threading.Thread(target=lambda: _safe(lambda: _yt_mark_watched(vid), None), daemon=True).start()
+    return {'ok': True, 'title': title, 'start': start}
+
+
+def _play_stream(streams, title, start=0.0):
     input_conf = os.path.join(CONF_DIR, 'mpv-input.conf')
     os.makedirs(CONF_DIR, exist_ok=True)
     with open(input_conf, 'w') as f:
         f.write(MPV_INPUT)
-    if FAKE:
-        return {'ok': True, 'title': title}
-    streams = _yt_resolve(vid)
     hdr = streams['headers']
     cmd = ['mpv', '--fs', *MPV_QUIET, '--force-window=immediate', '--keep-open=no', '--ytdl=no',
            '--hwdec=drm,v4l2m2m', '--vo=dmabuf-wayland', '--input-default-bindings=no', f'--input-conf={input_conf}',
@@ -2466,7 +2491,7 @@ def _yt_play(body):
     if streams['audio']:
         cmd.append(f"--audio-file={streams['audio']}")
     if streams['live']:
-        # YouTube's live HLS connections stall when FFmpeg reuses or prefetches them, corrupting audio and
+        # Live HLS connections can stall when FFmpeg reuses or prefetches them, corrupting audio and
         # leaving video behind. Open a fresh connection for each segment in both the video and audio demuxers.
         cmd.append('--demuxer-lavf-o=http_persistent=0,http_multiple=0')
     else:
@@ -2480,10 +2505,7 @@ def _yt_play(body):
     with _player_lock:
         proc = _mpv_popen(cmd, env)
         _player.update(proc=proc, title=title, rating_key=None, position=start * 1000, paused=False, duration=0)
-    threading.Thread(target=_watch_yt, args=(proc, video), daemon=True).start()
-    if yt_signed_in():   # (into the account's watch history, as YouTube's own apps do)
-        threading.Thread(target=lambda: _safe(lambda: _yt_mark_watched(vid), None), daemon=True).start()
-    return {'ok': True, 'title': title, 'start': start}
+    return proc
 
 
 def _yt_update_tools():
@@ -2574,7 +2596,8 @@ ROUTES_POST = {
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
     '/api/yt/play': yt_play,
-    '/api/yt/news-live': yt_news_live,
+    '/api/news/live': news_live,
+    '/api/yt/news-live': news_live,   # older kiosk pages may still use this URL until reloaded
     '/api/password': password_set,
     '/api/yt/signin': yt_signin,
     '/api/yt/prepare': yt_prepare,
