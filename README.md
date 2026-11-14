@@ -10,7 +10,7 @@ remote with a trackpad, though any USB keyboard and mouse work.
 ## Features
 
 - **Home screen**: clock, weather for your location, and large tiles for
-  YouTube, Plex, Music and casting.
+  YouTube, News Live (CBS News 24/7 on YouTube), Plex, Music and casting.
 - **YouTube**, built in: your followed channels' new videos, search, channel
   pages and history with resume points, played full screen in mpv from
   YouTube's own H.264 streams with the hardware decoder (up to 1080p). There
@@ -40,7 +40,9 @@ remote with a trackpad, though any USB keyboard and mouse work.
 - Your location is only what you type into Settings. Home Base never looks up
   your location from your IP address.
 - Weather comes from [Open-Meteo](https://open-meteo.com): the city you search
-  for and the saved coordinates are sent to it.
+  for and the saved coordinates are sent to it. If forecasts are unavailable,
+  US locations use the [National Weather Service](https://www.weather.gov)
+  with the saved coordinates.
 - AP headlines are fetched through Google News' public RSS feed, restricted to
   apnews.com.
 - The Plex token stays on the Pi; the browser only talks to the local backend.

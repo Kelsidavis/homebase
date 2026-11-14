@@ -408,6 +408,11 @@ function closeMenu(refocus) {
 
 const ACTIONS = {
   youtube: () => show('youtube'),
+  'news-live': async () => {
+    starting.show('CBS News 24/7');
+    try { await api('/api/yt/news-live', {}); starting.untilPlaying(); plexv.watchPlayer(); }
+    catch (err) { starting.hide(); toast(err.message); }
+  },
   plex: () => show('plex'),
   music: () => show('music'),
   cast: () => openDialog({
@@ -2357,7 +2362,7 @@ async function start() {
       if (!music.isPlaying()) $('#tile-music-sub').textContent = `Your music on ${p.server}, with visualizers`;
     }
   }).catch(() => {});
-  setInterval(refreshWeather, 10 * 60 * 1000);
+  setInterval(refreshWeather, 60 * 1000);   // retry outages promptly; the backend caches successful forecasts for 10 min
   setInterval(refreshNews, 15 * 60 * 1000);
   setInterval(refreshNetworkChip, 30 * 1000);
   setInterval(refreshCast, 60 * 1000);

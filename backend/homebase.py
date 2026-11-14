@@ -807,6 +807,61 @@ def weather_unit(settings):
     return 'f' if country in FAHRENHEIT_COUNTRIES else 'c'
 
 
+def _weather_open_meteo(w, unit):
+    q = urllib.parse.urlencode({
+        'latitude': w['lat'], 'longitude': w['lon'],
+        'current': 'temperature_2m,weather_code,is_day',
+        'daily': 'temperature_2m_max,temperature_2m_min',
+        'temperature_unit': 'fahrenheit' if unit == 'f' else 'celsius',
+        'timezone': 'auto', 'forecast_days': 1,
+    })
+    d = http_json(f'https://api.open-meteo.com/v1/forecast?{q}', timeout=4)
+    code = d['current']['weather_code']
+    text, icon = WMO.get(code, ('', 'cloudy'))
+    return {'configured': True, 'place': w['name'], 'unit': unit,
+            'temp': round(d['current']['temperature_2m']),
+            'high': round(d['daily']['temperature_2m_max'][0]),
+            'low': round(d['daily']['temperature_2m_min'][0]),
+            'conditions': text, 'icon': icon, 'is_day': bool(d['current'].get('is_day', 1))}
+
+
+def _weather_nws(w, unit):
+    """US fallback when Open-Meteo is unreachable, using the saved coordinates only."""
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import datetime, timezone
+
+    headers = {'User-Agent': 'HomeBase/1.0 (https://github.com/Kelsidavis/homebase)',
+               'Accept': 'application/geo+json'}
+    point = http_json(f"https://api.weather.gov/points/{w['lat']:.4f},{w['lon']:.4f}", headers, timeout=5)['properties']
+    units = 'us' if unit == 'f' else 'si'
+
+    def forecast(field):
+        url = point[field]
+        # Only follow forecast links on the weather service itself.
+        if urllib.parse.urlsplit(url).scheme != 'https' or urllib.parse.urlsplit(url).netloc != 'api.weather.gov':
+            raise ValueError('Invalid weather forecast URL')
+        return http_json(f'{url}?units={units}', headers, timeout=5)['properties']['periods']
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        hourly, daily = list(pool.map(forecast, ('forecastHourly', 'forecast')))
+    now = datetime.fromtimestamp(time.time(), timezone.utc)
+    current = next(p for p in hourly if datetime.fromisoformat(p['startTime']) <= now < datetime.fromisoformat(p['endTime']))
+    today = now.astimezone(datetime.fromisoformat(current['startTime']).tzinfo).date()
+    today_periods = [p for p in daily if datetime.fromisoformat(p['startTime']).date() == today]
+    day = next((p for p in today_periods if p['isDaytime']), None) or next(p for p in daily if p['isDaytime'])
+    night = next((p for p in today_periods if not p['isDaytime']), None) or next(p for p in daily if not p['isDaytime'])
+    conditions = current['shortForecast']
+    description = conditions.lower()
+    icon = next((icon for terms, icon in [
+        (('thunder',), 'storm'), (('snow', 'sleet', 'ice'), 'snow'), (('rain', 'drizzle', 'shower'), 'rain'),
+        (('fog', 'haze', 'mist'), 'fog'), (('partly', 'mostly sunny', 'mostly clear'), 'partly'),
+        (('cloud', 'overcast'), 'cloudy'),
+    ] if any(term in description for term in terms)), 'clear')
+    return {'configured': True, 'place': w['name'], 'unit': unit,
+            'temp': round(current['temperature']), 'high': round(day['temperature']), 'low': round(night['temperature']),
+            'conditions': conditions, 'icon': icon, 'is_day': current['isDaytime']}
+
+
 def get_weather():
     s = load_settings()
     w = s['weather']
@@ -816,26 +871,20 @@ def get_weather():
     key = (w['lat'], w['lon'], unit)
     if _weather_cache['key'] == key and time.time() - _weather_cache['at'] < 600:
         return _weather_cache['data']
-    q = urllib.parse.urlencode({
-        'latitude': w['lat'], 'longitude': w['lon'],
-        'current': 'temperature_2m,weather_code,is_day',
-        'daily': 'temperature_2m_max,temperature_2m_min',
-        'temperature_unit': 'fahrenheit' if unit == 'f' else 'celsius',
-        'timezone': 'auto', 'forecast_days': 1,
-    })
+    errors = (urllib.error.URLError, OSError, ValueError, KeyError, TypeError, IndexError, StopIteration)
     try:
-        d = http_json(f'https://api.open-meteo.com/v1/forecast?{q}')
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        if _weather_cache['data'] and _weather_cache['key'] == key:
-            return _weather_cache['data']
-        return {'configured': True, 'error': f'Weather unavailable ({e})', 'place': w['name']}
-    code = d['current']['weather_code']
-    text, icon = WMO.get(code, ('', 'cloudy'))
-    data = {'configured': True, 'place': w['name'], 'unit': unit,
-            'temp': round(d['current']['temperature_2m']),
-            'high': round(d['daily']['temperature_2m_max'][0]),
-            'low': round(d['daily']['temperature_2m_min'][0]),
-            'conditions': text, 'icon': icon, 'is_day': bool(d['current'].get('is_day', 1))}
+        data = _weather_open_meteo(w, unit)
+    except errors as e:
+        data = None
+        if (w.get('country') or s.get('country') or '').upper() == 'US':
+            try:
+                data = _weather_nws(w, unit)
+            except errors:
+                pass
+        if data is None:
+            if _weather_cache['data'] and _weather_cache['key'] == key:
+                return _weather_cache['data']
+            return {'configured': True, 'error': f'Weather unavailable ({e})', 'place': w['name']}
     _weather_cache.update(key=key, at=time.time(), data=data)
     return data
 
@@ -1852,6 +1901,31 @@ def _yt_text(o):
     return ''
 
 
+def _yt_locked(entry):
+    """Playback uses no account cookies, even when browsing is signed in: omit access-gated videos."""
+    if entry.get('availability') in ('subscriber_only', 'premium_only', 'private', 'needs_auth'):
+        return True
+
+    def scan(o, badge=False):
+        if isinstance(o, dict):
+            for key, value in o.items():
+                if key in ('style', 'badgeStyle', 'iconType') and value in (
+                        'BADGE_STYLE_TYPE_MEMBERS_ONLY', 'BADGE_MEMBERS_ONLY', 'BADGE_STYLE_TYPE_PREMIUM',
+                        'PRIVACY_PRIVATE', 'SPONSORSHIP_STAR'):
+                    return True
+                if scan(value, badge or 'badge' in key.lower() or key.startswith('thumbnailOverlay')):
+                    return True
+        elif isinstance(o, list):
+            return any(scan(value, badge) for value in o)
+        elif badge and isinstance(o, str):
+            label = o.strip().lower()
+            return bool(re.search(r'\bmembers?[\s-]+only\b', label)) or label in (
+                'premium', 'private', 'private video', 'purchase required', 'rent or buy')
+        return False
+
+    return scan(entry)
+
+
 def _yt_tv_videos(page):
     """The videos on a TV page: each the largest part of the page that leads to exactly one video (a tile)."""
     sets = {}
@@ -1874,7 +1948,7 @@ def _yt_tv_videos(page):
 
     def emit(o):
         vid = next(iter(sets[id(o)]))
-        if vid in seen:
+        if vid in seen or _yt_locked(o):
             return
         seen.add(vid)
         texts, channel_id, channel, dur, live = [], '', '', None, False
@@ -1967,7 +2041,7 @@ def _yt_tv_home():
             return None
         tiles = (s.get('content') or {}).get('horizontalListRenderer') or {}
         videos = _yt_tv_videos(tiles.get('items') or [])
-        if videos and _yt_next_token(tiles):
+        if _yt_next_token(tiles):
             more = _safe(lambda: _yt_tv_post('browse', {'continuation': _yt_next_token(tiles)}), {})
             videos += _yt_tv_videos(((more.get('continuationContents') or {}).get('horizontalListContinuation') or {})
                                     .get('items') or [])
@@ -2047,7 +2121,8 @@ def yt_search(q):
         return []
     def fetch():
         d = _ytdlp_json([f'ytsearch40:{query}'])
-        return [_yt_video(e) for e in d.get('entries') or [] if e.get('ie_key') in (None, 'Youtube') and e.get('id')]
+        return [_yt_video(e) for e in d.get('entries') or []
+                if e.get('ie_key') in (None, 'Youtube') and e.get('id') and not _yt_locked(e)]
     return _yt_cached(('search', query), 600, fetch)
 
 
@@ -2066,6 +2141,8 @@ def yt_channel(q):
         d = _ytdlp_json(['--playlist-items', '1-40', f'https://www.youtube.com/channel/{cid}/videos'])
         vids = []
         for e in d.get('entries') or []:
+            if not e.get('id') or _yt_locked(e):
+                continue
             v = _yt_video(e)
             v['channel'] = v['channel'] or d.get('channel') or d.get('uploader') or ''
             v['channel_id'] = cid
@@ -2128,7 +2205,8 @@ def _yt_topic_videos(i):
                f'&sp={sp}&gl={urllib.parse.quote(country)}&hl=en')
         d = _ytdlp_json(['--playlist-items', '1-20', '--extractor-args', 'youtube:lang=en', url])
         return [_yt_video(e) for e in d.get('entries') or []
-                if e.get('id') and '/shorts/' not in str(e.get('url') or '') and e.get('ie_key') in (None, 'Youtube')]
+                if e.get('id') and '/shorts/' not in str(e.get('url') or '') and e.get('ie_key') in (None, 'Youtube')
+                and not _yt_locked(e)]
     return _yt_cached(('topic', query, country), 3 * 3600, fetch)
 
 
@@ -2338,6 +2416,18 @@ def yt_prepare(body):
     return {'ok': True}
 
 
+def yt_news_live(body):
+    # Resolve the channel each time: CBS replaces its live video, so a saved video id goes stale.
+    with claim_tv('News Live'):
+        data = _ytdlp_json(['--playlist-items', '1-20', 'https://www.youtube.com/@CBSNews/streams'])
+        live = [e for e in data.get('entries') or []
+                if e.get('live_status') == 'is_live' and _yt_valid_id(e.get('id') or '')]
+        if not live:
+            raise ApiError('CBS News is not live on YouTube right now. Please try again later.', 503)
+        entry = next((e for e in live if 'cbs news 24/7' in (e.get('title') or '').lower()), live[0])
+        return _yt_play({**_yt_video(entry), 'resume': False})
+
+
 def yt_play(body):
     with claim_tv('YouTube'):
         return _yt_play(body)
@@ -2484,6 +2574,7 @@ ROUTES_POST = {
     '/api/plex/server': plex_select_server,
     '/api/plex/play': plex_play,
     '/api/yt/play': yt_play,
+    '/api/yt/news-live': yt_news_live,
     '/api/password': password_set,
     '/api/yt/signin': yt_signin,
     '/api/yt/prepare': yt_prepare,
